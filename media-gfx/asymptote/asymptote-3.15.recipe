@@ -28,7 +28,7 @@ LICENSE="GNU GPL v3
 	GNU LGPL v3"
 REVISION="1"
 SOURCE_URI="https://downloads.sourceforge.net/project/asymptote/$portVersion/asymptote-$portVersion.src.tgz"
-CHECKSUM_SHA256="537e9f22621bf84f09ee0d44dc455c4ea91ba193830f1d7624a07d4710d7e7d1"
+CHECKSUM_SHA256="a32764fcfc83eb4eb2981aa9df2c0e6229ffab95929f1030abfc6a6d1abf5e8d"
 PATCHES="asymptote-$portVersion.patchset"
 ADDITIONAL_FILES="xasy.rdef.in"
 
@@ -42,7 +42,7 @@ if [ "$targetArchitecture" = x86_gcc2 ]; then
 	commandBinDir=$prefix/bin
 fi
 
-pythonPackage=python310
+pythonPackage=python3.14
 
 USER_SETTINGS_FILES="
 	settings/asy directory
@@ -54,12 +54,11 @@ PROVIDES="
 	"
 REQUIRES="
 	haiku$secondaryArchSuffix
-	lib:libboost_filesystem$secondaryArchSuffix
-	lib:libboost_thread$secondaryArchSuffix
 	lib:libcurl$secondaryArchSuffix
 	lib:libedit$secondaryArchSuffix
 	lib:libfftw3$secondaryArchSuffix
 	lib:libGL$secondaryArchSuffix
+	lib:libglfw$secondaryArchSuffix
 	lib:libgsl$secondaryArchSuffix
 	lib:libgslcblas$secondaryArchSuffix
 	lib:libncursesw$secondaryArchSuffix
@@ -77,20 +76,21 @@ REQUIRES_gui="
 	asymptote$secondaryArchSuffix == $portVersion base
 	cson_$pythonPackage
 	numpy_$pythonPackage
-	pyside6$secondaryArchSuffix
+	pyside6_$pythonPackage
 	"
 
 BUILD_REQUIRES="
 	haiku${secondaryArchSuffix}_devel
+	vulkan_headers
 	devel:eigen$secondaryArchSuffix
 	devel:libboost_filesystem$secondaryArchSuffix >= 1.91.0
-	devel:libboost_thread$secondaryArchSuffix >= 1.91.0
 	devel:libcurl$secondaryArchSuffix
 	devel:libedit$secondaryArchSuffix
 	devel:libfftw3$secondaryArchSuffix
 	devel:libGL$secondaryArchSuffix
 	devel:libglm$secondaryArchSuffix
 	devel:libGLU$secondaryArchSuffix
+	devel:libglfw$secondaryArchSuffix
 	devel:libgsl$secondaryArchSuffix
 	devel:libgslcblas$secondaryArchSuffix
 	devel:libintl$secondaryArchSuffix
@@ -100,6 +100,7 @@ BUILD_REQUIRES="
 	devel:libz$secondaryArchSuffix
 	tex:asymptote
 	tex:latex
+	tex:texinfo
 	tex:type1cm
 	# The following TeX packages are needed for creating tex formats:
 	# (because of texlive packaging, all hyphenation patterns are needed,
