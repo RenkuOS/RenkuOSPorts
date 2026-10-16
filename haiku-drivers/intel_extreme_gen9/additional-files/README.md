@@ -70,5 +70,6 @@ the libdrm headers, and the pre-generated Intel shaders. They do not depend on
 files from an agent's /tmp directory. The shader README describes regeneration.
 
 Use at most three compiler jobs with 12 GB of VM RAM. Build outside the live
-machine when possible. Build the kernel driver again for a new Haiku revision;
+machine when possible. The kernel package permits hrev60228 through hrev60232. Build and test the
+driver again before you increase this range for a new Haiku revision;
 this port uses private kernel interfaces and does not promise a stable ABI.
