@@ -1,0 +1,60 @@
+SUMMARY="Experimental Intel Gen9 render-node driver"
+DESCRIPTION="This intel_extreme replacement adds an Intel Gen9 render node \
+for Mesa iris. The package contains the driver, license notices and a \
+4096-submission regression check. Install the driver in the home package \
+location so it overrides the system driver. Cold boot after installation. \
+Only trusted graphics clients may use this experimental driver."
+HOMEPAGE="https://github.com/RenkuOS/Source/pull/98"
+COPYRIGHT="2002-2026 Haiku contributors
+	2004-2026 Genode Labs GmbH
+	2026 Haiku iris port contributors"
+LICENSE="MIT
+	Genode-AGPL-3.0-with-linking-exception"
+REVISION="1"
+srcGitRev="544c5b738194a5b228e8a7951fcdba8af50f87d6"
+SOURCE_URI="https://github.com/duncanmcqueen/Source/archive/$srcGitRev.tar.gz"
+CHECKSUM_SHA256="4012c0daa34919a790a5d426118561df2070cf4c84ef043d3447a20afe0c6beb"
+SOURCE_FILENAME="Source-$srcGitRev.tar.gz"
+SOURCE_DIR="Source-$srcGitRev"
+ADDITIONAL_FILES="Makefile
+	kernel_debug_config.h
+	tracing_config.h
+	README.md"
+ARCHITECTURES="?x86_64"
+
+PROVIDES="
+	intel_extreme_gen9 = $portVersion
+	cmd:intel_gen9_stress = $portVersion
+	"
+REQUIRES="
+	haiku >= r1~beta6_hrev60228
+	"
+BUILD_REQUIRES="
+	haiku_devel >= r1~beta6_hrev60228
+	"
+BUILD_PREREQUIRES="
+	cmd:gcc
+	cmd:ld
+	cmd:make
+	"
+
+BUILD()
+{
+	cp "$portDir/additional-files/Makefile" .
+	cp "$portDir/additional-files/"*_config.h .
+	make $jobArgs
+}
+
+INSTALL()
+{
+	mkdir -p $addOnsDir/kernel/drivers/bin \
+		$addOnsDir/kernel/drivers/dev/graphics $binDir $docDir
+	cp objects/intel_extreme $addOnsDir/kernel/drivers/bin/
+	ln -s ../../bin/intel_extreme \
+		$addOnsDir/kernel/drivers/dev/graphics/intel_extreme
+	cp objects/intel-gen9-stress $binDir/
+	cp "$portDir/additional-files/README.md" $docDir/
+	cp src/add-ons/kernel/drivers/graphics/intel_extreme/README.render-node.md \
+		$docDir/
+	cp src/add-ons/kernel/drivers/graphics/intel_extreme/COPYING.Genode $docDir/
+}
