@@ -73,3 +73,15 @@ Use at most three compiler jobs with 12 GB of VM RAM. Build outside the live
 machine when possible. The kernel package permits hrev60228 through hrev60232. Build and test the
 driver again before you increase this range for a new Haiku revision;
 this port uses private kernel interfaces and does not promise a stable ABI.
+
+## BGRA texture uploads (revision 2)
+
+Revision 2 fixes a texture-map crash exposed by the Cryo Dune port. Iris now
+updates valid_buffer_range only for buffer resources, whose range mutex is
+initialized. Texture resources do not initialize that mutex.
+
+Run `intel-gen9-texture-upload-test` after installation. It uploads BGRA data
+to an RGBA texture 32 times and verifies the result with FBO readback. The
+reported renderer must identify Intel for a hardware check. Use
+`LIBGL_ALWAYS_SOFTWARE=1 intel-gen9-texture-upload-test` for the software check.
+The old library aborts on the hardware test on HD 515.

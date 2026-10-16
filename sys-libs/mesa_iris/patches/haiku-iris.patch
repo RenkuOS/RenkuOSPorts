@@ -615,3 +615,11 @@ index fbd1acc..049a84b 100644
  endforeach
  
  libintel_shaders = static_library(
+diff --git a/src/gallium/drivers/iris/iris_resource.c b/src/gallium/drivers/iris/iris_resource.c
+--- a/src/gallium/drivers/iris/iris_resource.c
++++ b/src/gallium/drivers/iris/iris_resource.c
+@@ -2504,2 +2504,3 @@ iris_transfer_map(struct pipe_context *ctx,
+-   if (usage & PIPE_MAP_WRITE)
++   /* valid_buffer_range and its mutex are initialized only for buffers. */
++   if (resource->target == PIPE_BUFFER && (usage & PIPE_MAP_WRITE))
+       util_range_add(&res->base.b, &res->valid_buffer_range, box->x, box->x + box->width);

@@ -8,7 +8,7 @@ COPYRIGHT="1999-2026 Brian Paul
 	Intel Corporation
 	2026 Haiku iris port contributors"
 LICENSE="MIT"
-REVISION="1"
+REVISION="2"
 SOURCE_URI="https://archive.mesa3d.org/mesa-$portVersion.tar.xz"
 CHECKSUM_SHA256="59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206"
 SOURCE_DIR="mesa-$portVersion"
@@ -43,12 +43,14 @@ ADDITIONAL_FILES="intel_gfx110_shaders.spv
 	50_mesa.json
 	win-probe.cc
 	win-fbo-probe.cc
+	texture-upload-probe.cpp
 	README.md"
 ARCHITECTURES="?x86_64"
 
 PROVIDES="
 	mesa_iris = $portVersion
 	cmd:intel_gen9_present_test = $portVersion
+	cmd:intel_gen9_texture_upload_test = $portVersion
 	cmd:intel_gen9_fbo_test = $portVersion
 	"
 REQUIRES="
@@ -103,7 +105,11 @@ BUILD()
 		cp "$portDir/additional-files/$header" "$shimDir/"
 	done
 	cp "$portDir/additional-files/sysmacros.h" "$shimDir/sys/sysmacros.h"
-	meson setup build --buildtype=release --prefix=$prefix \
+	mesonReconfigure=""
+	if [ -f build/build.ninja ]; then
+		mesonReconfigure="--reconfigure"
+	fi
+	meson setup $mesonReconfigure build --buildtype=release --prefix=$prefix \
 		--libdir=$libDir --includedir=$includeDir/os/opengl \
 		-Dgallium-drivers=llvmpipe,iris -Dvulkan-drivers= \
 		-Dplatforms=haiku -Dglx=disabled -Dgbm=disabled \
@@ -117,6 +123,8 @@ BUILD()
 		-Iinclude -lEGL -lGL -lbe -o intel-gen9-present-test
 	g++ -O2 "$portDir/additional-files/win-fbo-probe.cc" \
 		-Iinclude -lEGL -lGL -lbe -o intel-gen9-fbo-test
+	g++ -O2 "$portDir/additional-files/texture-upload-probe.cpp" \
+		-Iinclude -lEGL -lGL -lbe -o intel-gen9-texture-upload-test
 }
 
 INSTALL()
@@ -126,7 +134,8 @@ INSTALL()
 	mv $libDir/libEGL_mesa.so* $addOnsDir/opengl/egl_vendor.d/
 	cp "$portDir/additional-files/50_mesa.json" \
 		$addOnsDir/opengl/egl_vendor.d/
-	cp intel-gen9-present-test intel-gen9-fbo-test $binDir/
+	cp intel-gen9-present-test intel-gen9-fbo-test \
+		intel-gen9-texture-upload-test $binDir/
 	cp "$portDir/additional-files/README.md" $docDir/
 	# Headers and pkg-config files belong to libglvnd_devel.
 	rm -rf $developDir $prefix/share $dataDir/glvnd $dataDir/drirc.d
