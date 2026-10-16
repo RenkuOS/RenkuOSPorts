@@ -12,8 +12,8 @@ REVISION="2"
 SOURCE_URI="https://archive.mesa3d.org/mesa-$portVersion.tar.xz"
 CHECKSUM_SHA256="59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206"
 SOURCE_DIR="mesa-$portVersion"
-PATCHES="mesa-$portVersion.patchset
-	haiku-iris.patch"
+PATCHES="mesa_iris-$portVersion.patchset
+	mesa_iris-$portVersion-iris.patch"
 ADDITIONAL_FILES="intel_gfx110_shaders.spv
 	intel_gfx110_shaders_binding.cpp
 	intel_gfx110_shaders_binding.h
