@@ -1,0 +1,139 @@
+SUMMARY="Experimental Intel Gen9 EGL renderer for Haiku"
+DESCRIPTION="Mesa iris uses the experimental intel_extreme Gen9 render node. \
+This package includes the EGL vendor renderer, llvmpipe software fallback, \
+GL dispatch support and window presentation checks. It requires the matching \
+intel_extreme_gen9 driver and libglvnd. Hardware tests cover Intel HD 515 only."
+HOMEPAGE="https://github.com/RenkuOS/Source/pull/98"
+COPYRIGHT="1999-2026 Brian Paul
+	Intel Corporation
+	2026 Haiku iris port contributors"
+LICENSE="MIT"
+REVISION="1"
+SOURCE_URI="https://archive.mesa3d.org/mesa-$portVersion.tar.xz"
+CHECKSUM_SHA256="59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206"
+SOURCE_DIR="mesa-$portVersion"
+PATCHES="mesa-$portVersion.patchset
+	haiku-iris.patch"
+ADDITIONAL_FILES="intel_gfx110_shaders.spv
+	intel_gfx110_shaders_binding.cpp
+	intel_gfx110_shaders_binding.h
+	intel_gfx120_shaders.spv
+	intel_gfx120_shaders_binding.cpp
+	intel_gfx120_shaders_binding.h
+	intel_gfx125_shaders.spv
+	intel_gfx125_shaders_binding.cpp
+	intel_gfx125_shaders_binding.h
+	intel_gfx200_shaders.spv
+	intel_gfx200_shaders_binding.cpp
+	intel_gfx200_shaders_binding.h
+	intel_gfx300_shaders.spv
+	intel_gfx300_shaders_binding.cpp
+	intel_gfx300_shaders_binding.h
+	intel_gfx80_shaders.spv
+	intel_gfx80_shaders_binding.cpp
+	intel_gfx80_shaders_binding.h
+	intel_gfx90_shaders.spv
+	intel_gfx90_shaders_binding.cpp
+	intel_gfx90_shaders_binding.h
+	README.shaders.md
+	drm.h
+	drm_mode.h
+	xf86drm.h
+	sysmacros.h
+	50_mesa.json
+	win-probe.cc
+	win-fbo-probe.cc
+	README.md"
+ARCHITECTURES="?x86_64"
+
+PROVIDES="
+	mesa_iris = $portVersion
+	cmd:intel_gen9_present_test = $portVersion
+	cmd:intel_gen9_fbo_test = $portVersion
+	"
+REQUIRES="
+	haiku >= r1~beta6_hrev60228
+	libglvnd >= 1.7.0
+	lib:libLLVM >= 21
+	lib:libexpat
+	lib:libz
+	lib:libzstd
+	"
+CONFLICTS="
+	mesa
+	mesa_eglvnd
+	mesa_swpipe
+	"
+BUILD_REQUIRES="
+	haiku_devel
+	libglvnd_devel >= 1.7.0
+	devel:libLLVM >= 21
+	devel:libexpat
+	devel:libz
+	devel:libzstd
+	"
+BUILD_PREREQUIRES="
+	python3.10
+	mako_python310
+	pyyaml_python310
+	cmd:bison
+	cmd:flex
+	cmd:gcc
+	cmd:ld
+	cmd:llvm_config >= 21
+	cmd:meson
+	cmd:ninja
+	cmd:patch
+	cmd:pkg_config
+	cmd:python3.10
+	"
+
+BUILD()
+{
+	# Mesa generators need the Python version that provides Mako and PyYAML.
+	mkdir -p haiku-python
+	ln -sf "$(command -v python3.10)" haiku-python/python3
+	export PATH="$PWD/haiku-python:$PATH"
+	# Keep every input in this port. No /boot/home build paths are required.
+	cp "$portDir"/additional-files/intel_gfx* \
+		src/intel/shaders/
+	shimDir="$PWD/haiku-libdrm-shim"
+	mkdir -p "$shimDir/sys"
+	for header in drm.h drm_mode.h xf86drm.h; do
+		cp "$portDir/additional-files/$header" "$shimDir/"
+	done
+	cp "$portDir/additional-files/sysmacros.h" "$shimDir/sys/sysmacros.h"
+	meson setup build --buildtype=release --prefix=$prefix \
+		--libdir=$libDir --includedir=$includeDir/os/opengl \
+		-Dgallium-drivers=llvmpipe,iris -Dvulkan-drivers= \
+		-Dplatforms=haiku -Dglx=disabled -Dgbm=disabled \
+		-Dllvm=enabled -Dglvnd=enabled -Degl=enabled \
+		-Dgles1=enabled -Dgles2=enabled -Dopengl=true \
+		-Dshader-cache=disabled -Dgallium-rusticl=false \
+		-Dc_args="['-I$shimDir','-DMAJOR_IN_SYSMACROS']" \
+		-Dcpp_args="-I$shimDir"
+	ninja -C build $jobArgs
+	g++ -O2 "$portDir/additional-files/win-probe.cc" \
+		-Iinclude -lEGL -lGL -lbe -o intel-gen9-present-test
+	g++ -O2 "$portDir/additional-files/win-fbo-probe.cc" \
+		-Iinclude -lEGL -lGL -lbe -o intel-gen9-fbo-test
+}
+
+INSTALL()
+{
+	ninja -C build install
+	mkdir -p $addOnsDir/opengl/egl_vendor.d $binDir $docDir
+	mv $libDir/libEGL_mesa.so* $addOnsDir/opengl/egl_vendor.d/
+	cp "$portDir/additional-files/50_mesa.json" \
+		$addOnsDir/opengl/egl_vendor.d/
+	cp intel-gen9-present-test intel-gen9-fbo-test $binDir/
+	cp "$portDir/additional-files/README.md" $docDir/
+	# Headers and pkg-config files belong to libglvnd_devel.
+	rm -rf $developDir $prefix/share $dataDir/glvnd $dataDir/drirc.d
+}
+
+TEST()
+{
+	# GPU checks need a supported host. They are installed for use after boot.
+	ninja -C build test
+}

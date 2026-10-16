@@ -1,0 +1,617 @@
+diff --git a/meson.build b/meson.build
+index 933710e..61ffba1 100644
+--- a/meson.build
++++ b/meson.build
+@@ -826,7 +826,7 @@ else
+ endif
+ 
+ with_driver_using_cl = [
+-  with_gallium_iris, with_intel_vk,
++  with_intel_vk,
+   with_gallium_asahi, with_asahi_vk, with_tools.contains('asahi'),
+   with_gallium_panfrost, with_panfrost_vk,
+   with_nouveau_vk, with_imagination_vk,
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index f2f75c0..cba04c3 100644
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -26,6 +26,11 @@
+ #include <errno.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <dirent.h>
++#include <string.h>
++#include <stdlib.h>
+ 
+ #include <algorithm>
+ 
+@@ -49,10 +54,25 @@
+ #include "hgl/hgl_sw_winsys.h"
+ #include "hgl_context.h"
+ 
++#include "util/macros.h"
++#include "util/driconf.h"
++#include "util/xmlconfig.h"
++#include "util/format/u_format.h"
++#include "pipe/p_screen.h"
++
++/* Merged gallium + iris DRI options, as pipe_loader builds for the drm backends. */
++static const driOptionDescription haiku_driconf[] = {
++#include "pipe-loader/driinfo_gallium.h"
++#include "iris/driinfo_iris.h"
++};
++
+ #include <Bitmap.h>
++#include <OS.h>
++#include <new>
+ 
+ extern "C" {
+ #include "target-helpers/inline_sw_helper.h"
++#include "iris/drm/iris_drm_public.h"
+ }
+ 
+ #if MESA_DEBUG
+@@ -84,6 +104,13 @@ struct haiku_egl_surface {
+    _EGLSurface base;
+    struct hgl_buffer *fb;
+    struct pipe_fence_handle *throttle_fence;
++
++   // The hook owns the displayed bitmap until SetBitmap returns it.
++   BBitmap *present_spare;
++   unsigned present_frames;
++   bigtime_t present_map_us, present_copy_us, present_hook_us;
++   bigtime_t present_flush_us, present_wait_us;
++
+ };
+ 
+ // #pragma mark EGLSurface
+@@ -177,8 +204,12 @@ haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
+       // Unset bitmap to release ownership. Bitmap will be deleted later
+       // when destroying framebuffer.
+       BitmapHook *bitmapHook = (BitmapHook*)hgl_surf->fb->winsysContext;
+-      if (bitmapHook != NULL)
+-         bitmapHook->SetBitmap(NULL);
++      if (bitmapHook != NULL) {
++         BBitmap *displayed = bitmapHook->SetBitmap(NULL);
++         if (screen->flush_frontbuffer == NULL)
++            delete displayed;
++      }
++      delete hgl_surf->present_spare;
+ 
+       hgl_destroy_st_framebuffer(hgl_surf->fb);
+       free(surf);
+@@ -190,6 +221,8 @@ static void
+ update_size(struct hgl_buffer *buffer)
+ {
+    uint32_t newWidth, newHeight;
++   if (buffer->winsysContext == NULL)
++      return;
+    ((BitmapHook *)buffer->winsysContext)->GetSize(newWidth, newHeight);
+    if (buffer->newWidth != newWidth || buffer->newHeight != newHeight) {
+       buffer->newWidth = newWidth;
+@@ -198,6 +231,118 @@ update_size(struct hgl_buffer *buffer)
+    }
+ }
+ 
++// Debug helper: write a BGRX buffer to a binary PPM (P6) for inspection.
++static void
++haiku_dump_ppm(const char *path, const uint8_t *base, uint32_t stride,
++               uint32_t width, uint32_t height)
++{
++   if (path == NULL || path[0] == '\0')
++      return;
++   FILE *f = fopen(path, "wb");
++   if (f == NULL)
++      return;
++   fprintf(f, "P6\n%u %u\n255\n", width, height);
++   for (uint32_t y = 0; y < height; y++) {
++      const uint8_t *row = base + (size_t)y * stride;
++      for (uint32_t x = 0; x < width; x++) {
++         uint8_t rgb[3] = { row[x * 4 + 2], row[x * 4 + 1], row[x * 4 + 0] };
++         fwrite(rgb, 1, 3, f);
++      }
++   }
++   fclose(f);
++}
++
++// HGL hardware color buffers are linear. Wait for the producing fence in
++// SwapBuffers, then map the original resource without a staging GPU blit.
++static bool
++haiku_present_readback(struct haiku_egl_surface *hgl_surf, struct st_context *st,
++                       struct pipe_resource *backBuffer)
++{
++   BitmapHook *hook = (BitmapHook *)hgl_surf->fb->winsysContext;
++   if (hook == NULL || backBuffer == NULL)
++      return true;
++
++   // Use the rendered resource's dimensions. A window resize can precede
++   // attachment revalidation; mapping the new window size would overrun it.
++   const uint32_t width = backBuffer->width0;
++   const uint32_t height = backBuffer->height0;
++   if (width == 0 || height == 0)
++      return true;
++   if (backBuffer->format != PIPE_FORMAT_B8G8R8X8_UNORM &&
++       backBuffer->format != PIPE_FORMAT_B8G8R8A8_UNORM)
++      return false;
++
++   BBitmap *&bitmap = hgl_surf->present_spare;
++   BRect bounds(0, 0, width - 1, height - 1);
++   if (bitmap != NULL && bitmap->Bounds() != bounds) {
++      delete bitmap;
++      bitmap = NULL;
++   }
++   if (bitmap == NULL)
++      bitmap = new(std::nothrow) BBitmap(bounds, B_RGB32);
++   if (bitmap == NULL || bitmap->InitCheck() != B_OK || bitmap->Bits() == NULL)
++      return false;
++
++   bigtime_t start = system_time();
++   struct pipe_context *pipe = st->pipe;
++   struct pipe_box box = {};
++   box.width = width;
++   box.height = height;
++   box.depth = 1;
++   struct pipe_transfer *pt = NULL;
++   const uint8_t *src = (const uint8_t *)pipe->texture_map(pipe, backBuffer,
++      0, PIPE_MAP_READ | PIPE_MAP_DIRECTLY, &box, &pt);
++   if (src == NULL) {
++      ERROR("present: direct texture map failed\n");
++      return false;
++   }
++   hgl_surf->present_map_us += system_time() - start;
++   start = system_time();
++   uint8_t *dst = (uint8_t *)bitmap->Bits();
++   const size_t row_bytes = (size_t)width * 4;
++   const uint32_t dst_stride = bitmap->BytesPerRow();
++   if (pt->stride < row_bytes || dst_stride < row_bytes) {
++      pipe->texture_unmap(pipe, pt);
++      return false;
++   }
++   for (uint32_t y = 0; y < height; ++y)
++      memcpy(dst + (size_t)y * dst_stride, src + (size_t)y * pt->stride,
++             row_bytes);
++   hgl_surf->present_copy_us += system_time() - start;
++
++   ++hgl_surf->present_frames;
++   if (hgl_surf->present_frames == 30) {
++      haiku_dump_ppm(getenv("EGL_HAIKU_DUMP"), src, pt->stride, width, height);
++      haiku_dump_ppm(getenv("EGL_HAIKU_DUMP_BMP"), dst, dst_stride, width, height);
++   }
++   pipe->texture_unmap(pipe, pt);
++
++   start = system_time();
++   bitmap = hook->SetBitmap(bitmap);
++   hgl_surf->present_hook_us += system_time() - start;
++   if (getenv("EGL_HAIKU_PROFILE") != NULL && hgl_surf->present_frames % 120 == 0) {
++      double frames = hgl_surf->present_frames;
++      printf("present avg us: flush=%.1f wait=%.1f map=%.1f copy=%.1f hook=%.1f frames=%u\n",
++         hgl_surf->present_flush_us / frames, hgl_surf->present_wait_us / frames,
++         hgl_surf->present_map_us / frames, hgl_surf->present_copy_us / frames,
++         hgl_surf->present_hook_us / frames, hgl_surf->present_frames);
++   }
++   return true;
++}
++
++struct haiku_flush_args {
++   struct pipe_context *pipe;
++   struct pipe_resource *resource;
++};
++
++static void
++haiku_flush_display_target(void *data)
++{
++   struct haiku_flush_args *args = (struct haiku_flush_args *)data;
++   if (args->resource != NULL)
++      args->pipe->flush_resource(args->pipe, args->resource);
++}
++
+ static EGLBoolean
+ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
+ {
+@@ -214,25 +359,42 @@ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
+    auto &frontBuffer = buffer->textures[ST_ATTACHMENT_FRONT_LEFT];
+    auto &backBuffer = buffer->textures[ST_ATTACHMENT_BACK_LEFT];
+ 
+-   // Inform ST of a flush if double buffering is used
+-   if (backBuffer != NULL)
+-      st->pipe->flush_resource(st->pipe, backBuffer);
+-
++   // Finish the GL worker before accessing its pipe context/resources.
+    _mesa_glthread_finish(st->ctx);
+-
++   bigtime_t start = system_time();
++   // CPU-copy presentation does not export a GPU BO. iris flush_resource
++   // may replace its backing storage, so it is unnecessary for this path.
++   // Prepare software display targets after queued GL vertices are drained.
++   struct haiku_flush_args args = {st->pipe, backBuffer};
+    struct pipe_fence_handle *new_fence = NULL;
+-   st_context_flush(st, ST_FLUSH_FRONT, &new_fence, NULL, NULL);
+-   if (hgl_surf->throttle_fence) {
+-      screen->fence_finish(screen, NULL, hgl_surf->throttle_fence,
+-                           OS_TIMEOUT_INFINITE);
+-      screen->fence_reference(screen, &hgl_surf->throttle_fence, NULL);
++   st_context_flush(st, ST_FLUSH_FRONT, &new_fence,
++      screen->flush_frontbuffer ? haiku_flush_display_target : NULL, &args);
++   hgl_surf->present_flush_us += system_time() - start;
++   start = system_time();
++   if (screen->flush_frontbuffer == NULL) {
++      // We are about to read this frame, not the previous throttled frame.
++      bool finished = new_fence == NULL ||
++         screen->fence_finish(screen, st->pipe, new_fence,
++                                           OS_TIMEOUT_INFINITE);
++      screen->fence_reference(screen, &new_fence, NULL);
++      if (!finished)
++         return _eglError(EGL_BAD_ACCESS, "haiku present fence");
++   } else {
++      if (hgl_surf->throttle_fence) {
++         screen->fence_finish(screen, NULL, hgl_surf->throttle_fence,
++                              OS_TIMEOUT_INFINITE);
++         screen->fence_reference(screen, &hgl_surf->throttle_fence, NULL);
++      }
++      hgl_surf->throttle_fence = new_fence;
+    }
+-   hgl_surf->throttle_fence = new_fence;
++   hgl_surf->present_wait_us += system_time() - start;
+ 
+-   // flush back buffer and swap buffers if double buffering is used
+    if (backBuffer != NULL) {
+-      screen->flush_frontbuffer(screen, st->pipe, backBuffer, 0, 0,
+-                                buffer->winsysContext, 1, NULL);
++      if (screen->flush_frontbuffer != NULL)
++         screen->flush_frontbuffer(screen, st->pipe, backBuffer, 0, 0,
++                                   buffer->winsysContext, 1, NULL);
++      else if (!haiku_present_readback(hgl_surf, st, backBuffer))
++         return _eglError(EGL_BAD_ALLOC, "haiku present readback");
+       std::swap(frontBuffer, backBuffer);
+       p_atomic_inc(&buffer->base.stamp);
+    }
+@@ -329,6 +491,29 @@ haiku_display_destroy(_EGLDisplay *disp)
+    free(hgl_dpy);
+ }
+ 
++static int
++haiku_open_render_node(void)
++{
++   static const char kPrefix[] = "intel_render_9x_";
++   DIR *dir = opendir("/dev/graphics");
++   if (dir == NULL)
++      return -1;
++
++   int fd = -1;
++   struct dirent *entry;
++   while ((entry = readdir(dir)) != NULL) {
++      if (strncmp(entry->d_name, kPrefix, sizeof(kPrefix) - 1) != 0)
++         continue;
++      char path[300];
++      snprintf(path, sizeof(path), "/dev/graphics/%s", entry->d_name);
++      fd = open(path, O_RDWR);
++      if (fd >= 0)
++         break;
++   }
++   closedir(dir);
++   return fd;
++}
++
+ static EGLBoolean
+ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+ {
+@@ -342,8 +527,52 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+    hgl_dpy->ref_count = 1;
+    disp->DriverData = (void *)hgl_dpy;
+ 
+-   struct sw_winsys *winsys = hgl_create_sw_winsys();
+-   struct pipe_screen *screen = sw_screen_create(winsys);
++   struct pipe_screen *screen = NULL;
++
++   /* Prefer the native Intel Gen9 render node (iris); fall back to software. */
++   int drm_fd = debug_get_bool_option("LIBGL_ALWAYS_SOFTWARE", false)
++      ? -1 : haiku_open_render_node();
++   if (drm_fd >= 0) {
++      static driOptionCache option_info;
++      static driOptionCache option_cache;
++      driParseOptionInfo(&option_info, haiku_driconf, ARRAY_SIZE(haiku_driconf));
++      driParseConfigFiles(&option_cache, &option_info, 0, "iris",
++                          NULL, NULL, NULL, 0, NULL, 0);
++
++      struct pipe_screen_config config;
++      config.driver_name_is_inferred = true;
++      config.options = &option_cache;
++      config.options_info = &option_info;
++
++      /* Haiku: render colour compression (CCS) is not yet functional on the
++       * intel_render_9x render node, so force iris to disable it. This is the
++       * same effect as INTEL_DEBUG=noccs; iris parses INTEL_DEBUG inside
++       * iris_screen_create() below. Any user-supplied flags are preserved. */
++      {
++         const char *dbg = getenv("INTEL_DEBUG");
++         char buf[512];
++         if (dbg != NULL && strstr(dbg, "noccs") != NULL)
++            snprintf(buf, sizeof(buf), "%s", dbg);
++         else if (dbg != NULL && *dbg != '\0')
++            snprintf(buf, sizeof(buf), "%s,noccs", dbg);
++         else
++            snprintf(buf, sizeof(buf), "noccs");
++         setenv("INTEL_DEBUG", buf, 1);
++      }
++
++      screen = iris_drm_screen_create(drm_fd, &config);
++      if (!screen) {
++         ERROR("iris_drm_screen_create failed; falling back to software\n");
++         close(drm_fd);
++      }
++   }
++
++   if (!screen) {
++      struct sw_winsys *winsys = hgl_create_sw_winsys();
++      screen = sw_screen_create(winsys);
++   }
++   if (!screen)
++      return _eglError(EGL_BAD_ALLOC, "eglInitialize");
+    hgl_dpy->disp = hgl_create_display(screen);
+ 
+    disp->ClientAPIs = 0;
+diff --git a/src/egl/meson.build b/src/egl/meson.build
+index f9b0e34..c8b8f17 100644
+--- a/src/egl/meson.build
++++ b/src/egl/meson.build
+@@ -148,7 +148,7 @@ elif with_platform_haiku
+   incs_for_egl += [include_directories('../gallium/frontends/hgl')]
+ 
+   link_for_egl += [libmesa, libgallium, libswhgl, libsthgl, libglapi]
+-  deps_for_egl += [cpp.find_library('be'), driver_swrast]
++  deps_for_egl += [cpp.find_library('be'), driver_swrast, driver_iris, idep_xmlconfig]
+ elif with_platform_windows
+   c_args_for_egl += [
+     '-DEGLAPI=', '-DPUBLIC='
+diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
+index e91ffeb..aaa367d 100644
+--- a/src/gallium/frontends/hgl/hgl.c
++++ b/src/gallium/frontends/hgl/hgl.c
+@@ -69,8 +69,11 @@ hgl_st_framebuffer_flush_front(struct st_context *st,
+ 		return true;
+ 
+ 	// TODO: pipe_context here??? Might be needed for hw renderers
+-	buffer->screen->flush_frontbuffer(buffer->screen, NULL, ptex, 0, 0,
+-		buffer->winsysContext, 0, NULL);
++	// Hardware pipe screens (e.g. iris) have no flush_frontbuffer; the
++	// frontend present is done by the EGL swap path instead.
++	if (buffer->screen->flush_frontbuffer != NULL)
++		buffer->screen->flush_frontbuffer(buffer->screen, NULL, ptex, 0, 0,
++			buffer->winsysContext, 0, NULL);
+ 
+ 	return true;
+ }
+@@ -114,7 +117,12 @@ hgl_st_framebuffer_validate_textures(struct pipe_frontend_drawable *drawable,
+ 				case ST_ATTACHMENT_FRONT_RIGHT:
+ 				case ST_ATTACHMENT_BACK_RIGHT:
+ 					format = buffer->visual.color_format;
+-					bind = PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_RENDER_TARGET;
++					bind = PIPE_BIND_RENDER_TARGET;
++					if (buffer->screen->flush_frontbuffer != NULL)
++						bind |= PIPE_BIND_DISPLAY_TARGET;
++					else
++						// CPU-copy presentation and GL readback use this resource.
++						bind |= PIPE_BIND_LINEAR | PIPE_BIND_SAMPLER_VIEW;
+ 					break;
+ 				case ST_ATTACHMENT_DEPTH_STENCIL:
+ 					format = buffer->visual.depth_stencil_format;
+@@ -318,6 +326,10 @@ hgl_get_st_visual(struct st_visual* visual, ulong options)
+ 
+ 	assert(visual);
+ 
++	// Callers pass stack storage. In particular, samples must be zero:
++	// HGL allocates single-sample attachments and has no MSAA resolve path.
++	memset(visual, 0, sizeof(*visual));
++
+ 	// Determine color format
+ 	if ((options & HGL_INDEX) != 0) {
+ 		// Index color
+diff --git a/src/intel/dev/intel_device_info.c b/src/intel/dev/intel_device_info.c
+index 379d9f6..473a579 100644
+--- a/src/intel/dev/intel_device_info.c
++++ b/src/intel/dev/intel_device_info.c
+@@ -37,6 +37,7 @@
+ #include "xe/intel_device_info.h"
+ 
+ #include "common/intel_gem.h"
++#include "drm-uapi/i915_drm.h"
+ #include "util/u_debug.h"
+ #include "util/log.h"
+ #include "util/macros.h"
+@@ -1855,28 +1856,48 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo, int min
+     * this drm query.
+     */
+    drmDevicePtr drmdev = NULL;
+-   if (drmGetDevice2(fd, DRM_DEVICE_GET_PCI_REVISION, &drmdev)) {
+-      mesa_loge("Failed to query drm device.");
+-      return false;
+-   }
+-   if (!intel_device_info_init_common(drmdev->deviceinfo.pci->device_id,
+-                                      false, devinfo)) {
++   uint16_t pci_device_id = 0, pci_revision_id = 0;
++   uint16_t pci_domain = 0, pci_bus = 0, pci_dev = 0, pci_func = 0;
++
++   if (drmGetDevice2(fd, DRM_DEVICE_GET_PCI_REVISION, &drmdev) == 0) {
++      pci_domain = drmdev->businfo.pci->domain;
++      pci_bus = drmdev->businfo.pci->bus;
++      pci_dev = drmdev->businfo.pci->dev;
++      pci_func = drmdev->businfo.pci->func;
++      pci_device_id = drmdev->deviceinfo.pci->device_id;
++      pci_revision_id = drmdev->deviceinfo.pci->revision_id;
+       drmFreeDevice(&drmdev);
+-      return false;
++   } else {
++      /* No libdrm device query (Haiku): ask the KMD via i915 GETPARAM. */
++      struct drm_i915_getparam gp;
++      int value = 0;
++
++      gp.param = I915_PARAM_CHIPSET_ID;
++      gp.value = &value;
++      if (intel_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp) != 0) {
++         mesa_loge("Failed to query drm device.");
++         return false;
++      }
++      pci_device_id = value;
++
++      gp.param = I915_PARAM_REVISION;
++      gp.value = &value;
++      if (intel_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp) == 0)
++         pci_revision_id = value;
+    }
+ 
+-   if ((min_ver > 0 && devinfo->ver < min_ver) || (max_ver > 0 && devinfo->ver > max_ver)) {
+-      drmFreeDevice(&drmdev);
++   if (!intel_device_info_init_common(pci_device_id, false, devinfo))
++      return false;
++
++   if ((min_ver > 0 && devinfo->ver < min_ver) || (max_ver > 0 && devinfo->ver > max_ver))
+       return false;
+-   }
+ 
+-   devinfo->pci_domain = drmdev->businfo.pci->domain;
+-   devinfo->pci_bus = drmdev->businfo.pci->bus;
+-   devinfo->pci_dev = drmdev->businfo.pci->dev;
+-   devinfo->pci_func = drmdev->businfo.pci->func;
+-   devinfo->pci_device_id = drmdev->deviceinfo.pci->device_id;
+-   devinfo->pci_revision_id = drmdev->deviceinfo.pci->revision_id;
+-   drmFreeDevice(&drmdev);
++   devinfo->pci_domain = pci_domain;
++   devinfo->pci_bus = pci_bus;
++   devinfo->pci_dev = pci_dev;
++   devinfo->pci_func = pci_func;
++   devinfo->pci_device_id = pci_device_id;
++   devinfo->pci_revision_id = pci_revision_id;
+    devinfo->no_hw = debug_get_bool_option("INTEL_NO_HW", false);
+ 
+    devinfo->kmd_type = intel_get_kmd_type(fd);
+diff --git a/src/intel/dev/intel_kmd.c b/src/intel/dev/intel_kmd.c
+index 63bb443..64a05d1 100644
+--- a/src/intel/dev/intel_kmd.c
++++ b/src/intel/dev/intel_kmd.c
+@@ -25,6 +25,8 @@
+ #include "util/libdrm.h"
+ 
+ #include "intel_kmd.h"
++#include "intel/common/intel_gem.h"
++#include "drm-uapi/i915_drm.h"
+ 
+ enum intel_kmd_type
+ intel_get_kmd_type(int fd)
+@@ -32,14 +34,24 @@ intel_get_kmd_type(int fd)
+    enum intel_kmd_type type = INTEL_KMD_TYPE_INVALID;
+    drmVersionPtr version = drmGetVersion(fd);
+ 
+-   if (!version)
+-      return type;
++   if (version) {
++      if (strcmp(version->name, "i915") == 0)
++         type = INTEL_KMD_TYPE_I915;
++      else if (strcmp(version->name, "xe") == 0)
++         type = INTEL_KMD_TYPE_XE;
+ 
+-   if (strcmp(version->name, "i915") == 0)
+-      type = INTEL_KMD_TYPE_I915;
+-   else if (strcmp(version->name, "xe") == 0)
+-      type = INTEL_KMD_TYPE_XE;
++      drmFreeVersion(version);
++   }
++
++   if (type == INTEL_KMD_TYPE_INVALID) {
++      /* No libdrm version query (Haiku): probe the i915 GETPARAM ioctl. */
++      struct drm_i915_getparam gp;
++      int value = 0;
++      gp.param = I915_PARAM_CHIPSET_ID;
++      gp.value = &value;
++      if (intel_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp) == 0)
++         type = INTEL_KMD_TYPE_I915;
++   }
+ 
+-   drmFreeVersion(version);
+    return type;
+ }
+diff --git a/src/intel/perf/intel_perf.c b/src/intel/perf/intel_perf.c
+index acfb35d..dcc4813 100644
+--- a/src/intel/perf/intel_perf.c
++++ b/src/intel/perf/intel_perf.c
+@@ -26,7 +26,10 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ 
+-#if defined(MAJOR_IN_SYSMACROS)
++#if defined(__HAIKU__)
++#define major(x) ((int)(((x) >> 8) & 0xff))
++#define minor(x) ((int)((x) & 0xff))
++#elif defined(MAJOR_IN_SYSMACROS)
+ #include <sys/sysmacros.h>
+ #elif defined(MAJOR_IN_MKDEV)
+ #include <sys/mkdev.h>
+diff --git a/src/intel/shaders/meson.build b/src/intel/shaders/meson.build
+index fbd1acc..049a84b 100644
+--- a/src/intel/shaders/meson.build
++++ b/src/intel/shaders/meson.build
+@@ -1,5 +1,10 @@
+ # Copyright © 2023 Intel Corporation
+ # SPDX-License-Identifier: MIT
++#
++# Haiku: the idep_intel_shaders custom targets run mesa_clc + vtn_bindgen2 over the
++# *.cl sources, which need libclc/clang that HaikuPorts does not have. The generated
++# binding sources are architecture-independent data, so they are pre-generated
++# off-tree (see gl-on-haiku/mesa-clc-artifacts/) and used directly here.
+ 
+ if with_intel_vk
+   intel_float64_spv_h = custom_target(
+@@ -19,15 +24,6 @@ if with_intel_vk
+   )
+ endif
+ 
+-intel_shader_files = files(
+-  'libintel_shaders.h',
+-  'generate.cl',
+-  'generate_draws.cl',
+-  'generate_draws_iris.cl',
+-  'query_copy.cl',
+-  'util.cl',
+-)
+-
+ intel_shaders_gens = [ [ 80,   8],
+                        [ 90,   9],
+                        [110,  11],
+@@ -38,34 +34,8 @@ intel_shaders_gens = [ [ 80,   8],
+ intel_shaders = []
+ intel_shaders_headers = []
+ foreach gen : intel_shaders_gens
+-  intel_shaders_spv = custom_target(
+-    input : intel_shader_files,
+-    output : 'intel_gfx@0@_shaders.spv'.format(gen[0]),
+-    command : [
+-      prog_mesa_clc,
+-      intel_shader_files, '-o', '@OUTPUT@', '--depfile', '@DEPFILE@', '--',
+-      '-DGFX_VERx10=@0@'.format(gen[0]),
+-      '-I' + join_paths(meson.current_source_dir(), '.'),
+-      '-I' + join_paths(dir_source_root, 'src/compiler/libcl'),
+-      '-I' + join_paths(dir_source_root, 'src'),
+-      '-I' + join_paths(dir_source_root, 'src/intel'),
+-      '-I' + join_paths(meson.project_build_root(), 'src/intel'),
+-      '-I' + join_paths(dir_source_root, 'src/intel/genxml'),
+-      cl_args,
+-    ],
+-    depends : [gen_cl_xml_pack, intel_dev_wa_src],
+-    depfile : 'intel_gfx@0@_shaders.spv.d'.format(gen[0]),
+-  )
+-
+-  _intel_shaders = custom_target(
+-    input : intel_shaders_spv,
+-    output : ['intel_gfx@0@_shaders_binding.cpp'.format(gen[0]),
+-              'intel_gfx@0@_shaders_binding.h'.format(gen[0])],
+-    command : [prog_vtn_bindgen2, intel_shaders_spv, '@OUTPUT0@', '@OUTPUT1@'],
+-  )
+-
+-  intel_shaders += _intel_shaders
+-  intel_shaders_headers += _intel_shaders[1]
++  intel_shaders += files('intel_gfx@0@_shaders_binding.cpp'.format(gen[0]))
++  intel_shaders_headers += files('intel_gfx@0@_shaders_binding.h'.format(gen[0]))
+ endforeach
+ 
+ libintel_shaders = static_library(
