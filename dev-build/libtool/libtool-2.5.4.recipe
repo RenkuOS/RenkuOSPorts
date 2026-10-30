@@ -65,16 +65,22 @@ BUILD()
 	export XZ=/bin/true
 	touch README-release
 
-	cp m4/libtool.m4 m4/libtool.m4.bak
-	./bootstrap --force
-	mv m4/libtool.m4.bak m4/libtool.m4
-		# bootstrap copies back the file from the system over the current ones.
-		# But we must run it, because libtool is shipped with old aclocal-1.15
-		# files and we have only a newer aclocal. So just restore the file.
+	# bootstrap clones gnulib with git, which a bootstrap system does not have
+	# yet. The release tarball is already bootstrapped, so skip it there.
+	if command -v git > /dev/null; then
+		cp m4/libtool.m4 m4/libtool.m4.bak
+		./bootstrap --force
+		mv m4/libtool.m4.bak m4/libtool.m4
+			# bootstrap copies back the file from the system over the current ones.
+			# But we must run it, because libtool is shipped with old aclocal-1.15
+			# files and we have only a newer aclocal. So just restore the file.
+	fi
 	SED='sed' NM='nm' LD=ld runConfigure ./configure \
 		--with-gnu-ld \
 		--disable-static
-	make $jobArgs
+	# Without bootstrap, a regenerated aclocal.m4 would ask for the tarball's
+	# automake version. Use whichever one is installed.
+	make $jobArgs ACLOCAL=aclocal AUTOMAKE=automake
 	# Desperate move to remove the absolute paths from libtool. For some reason
 	# only for the C++ compiler those are set (not for the C compiler). In
 	# openSuse libtool doesn't have those variables set either, but building
