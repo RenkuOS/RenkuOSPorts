@@ -14,7 +14,8 @@ ARCHITECTURES="all !x86_gcc2"
 SECONDARY_ARCHITECTURES="x86"
 
 IDNA=libidn2
-if [ "$effectiveTargetArchitecture" = x86_gcc2 ]; then
+# libidn2 needs gtk-doc to build, which arm64 does not have yet.
+if [ "$effectiveTargetArchitecture" = x86_gcc2 ] || [ "$effectiveTargetArchitecture" = arm64 ]; then
 	IDNA=libidn
 fi
 
