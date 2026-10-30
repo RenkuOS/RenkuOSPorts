@@ -1,0 +1,121 @@
+#!/bin/sh
+# Phase 1: run the documented second bootstrap stage natively, then build the
+# probe ports with the resulting full Python. Markers go to serial, logs to files.
+mark() { echo "PHASE1 $*" > /dev/dprintf; echo "PHASE1 $*" >> /boot/home/phase1.log; }
+# The arm64 kernel has no RTC driver yet and boots at time 0. Builds that compare
+# timestamps never settle, so take the host time written in before each boot.
+date -s @HOST_EPOCH > /dev/null
+mark "hello $(date +%s)"
+[ -e /boot/home/phase1.done ] && { mark "already done"; exit 0; }
+mark "$(uname -a)"
+mark "$(sysinfo -mem 2> /dev/null | grep -i -m1 "max\|total")"
+cd /boot/home/haikuports || exit 1
+grep -q "^PACKAGER" haikuports.conf || echo "PACKAGER=\"RenkuOS Phase 1 probe <probe@renkuos.invalid>\"" >> haikuports.conf
+# HaikuPorter's chroot setup copies this directory, and the bootstrap image has none.
+mkdir -p /boot/system/settings/fonts
+
+# Long builds log only to files, so show progress on serial every 10 minutes.
+# A configure test can hang for good (tar's re_compile_pattern check spun for 5 hours),
+# so after an hour without log output kill any conftest still running.
+(lastsize=; quiet=0
+while sleep 600; do
+	l=$(ls -t /boot/home/phase1-*.log 2> /dev/null | head -1)
+	mark "hb $(date +%s) $(ls packages 2> /dev/null | wc -l | tr -d " ") pkgs, ${l##*/}: $(tail -1 "$l" 2> /dev/null | cut -c1-100)"
+	size=$(wc -c < "$l" 2> /dev/null)
+	[ "$size" = "$lastsize" ] && quiet=$((quiet + 1)) || { quiet=0; lastsize=$size; }
+	if [ $quiet -ge 6 ]; then
+		for t in $(ps | awk '$1 ~ /conftest/ { print $2 }'); do
+			mark "watchdog: killing $(ps | awk -v t=$t '$2 == t { print $1 }') (team $t)"
+			kill -9 $t
+		done
+		quiet=0
+	fi
+done) &
+
+# The bootstrap image has no which(1).
+HP=$(command -v haikuporter) || { mark "no haikuporter"; mark "end"; exit 1; }
+build() {
+	log=/boot/home/phase1-$1.log; shift
+	t0=$(date +%s)
+	mark "begin $(basename $log .log) $t0"
+	"$@" >> $log 2>&1
+	r=$?
+	mark "exit $r seconds $(( $(date +%s) - t0 ))"
+	grep -a -E "^Error|grabbing" $log | tail -12 | while read -r line; do mark "  $line"; done
+	tail -2 $log | while read -r line; do mark "  $line"; done
+	sync
+}
+
+# --do-bootstrap only schedules ports inside dependency cycles, and checks their
+# prerequisites against /boot/system/packages alone. Today's recipes need tools
+# that no _bootstrap package provides (perl, autoconf, diffutils, libiconv...),
+# so build the non-cyclic rigged ports first and install them as system packages.
+mkdir -p /boot/home/phaseA
+stageA() {
+	for port in "$@"; do
+		[ -e /boot/home/phaseA/$port ] && continue
+		# A stop right after a build can lose the marker but not the package.
+		ls packages/$port-[0-9]*.hpkg > /dev/null 2>&1 && { echo 0 > /boot/home/phaseA/$port; continue; }
+		build A-$port $HP -y -jJOBS --no-source-packages --missing-dependencies $port
+		echo $r > /boot/home/phaseA/$port
+	done
+	# A package that has a _bootstrap version installed stays out of the system
+	# directory, so the two never conflict.
+	boot=$(ls /boot/system/packages | sed -n "s/_bootstrap.*//p" | sort -u)
+	for p in packages/*.hpkg; do
+		f=${p##*/}; name=${f%%-*}
+		case $f in *_source-*|*_debuginfo-*) continue ;; esac
+		skip=
+		for b in $boot; do
+			case $name in $b|${b}_*) skip=1 ;; esac
+		done
+		ls /boot/system/packages/$name-*.hpkg > /dev/null 2>&1 && skip=1
+		[ -n "$skip" ] || cp $p /boot/system/packages/
+	done
+	sleep 60
+	mark "stage A: $(ls /boot/home/phaseA | wc -l) ports tried, failed: $(grep -L "^0$" /boot/home/phaseA/* 2> /dev/null | xargs -n1 basename 2> /dev/null | tr "\n" " ")"
+	mark "system packages: $(ls /boot/system/packages | wc -l)"
+}
+LIGHT="perl m4 autoconf automake libtool autoconf_archive diffutils patch which gzip
+	tar unzip sed gawk make pkgconf libiconv bzip2 lz4 zlib ncurses6 readline libedit
+	libffi expat sqlite gperf help2man file libpng16 libpcre2 freetype gmp mpfr mpfr3
+	mpc nasm openssl ninja coreutils bison libpaper2 tiff4.4 ca_root_certificates"
+HEAVY="binutils gcc icu67 icu74 llvm19 llvm21 llvm23"
+
+# Stage 2 of docs/develop/packages/Bootstrapping.rst. It skips ports whose
+# main package exists, so a reboot resumes where the last boot stopped.
+if [ ! -e /boot/home/phase1.bootstrap-done ]; then
+	for set in "$LIGHT" "$LIGHT $HEAVY"; do
+		stageA $set
+		: > /boot/home/phase1-bootstrap.log
+		build bootstrap $HP -y -jJOBS --do-bootstrap
+		[ $r = 0 ] && { touch /boot/home/phase1.bootstrap-done; break; }
+		grep -aq "None of these cyclic dependencies can be built" \
+			/boot/home/phase1-bootstrap.log || break
+	done
+fi
+mark "packages: $(ls packages | tr "\n" " ")"
+
+# HaikuPorter runs on the bootstrap Python, which cannot unpack .tar.gz
+# sources, so install the full Python and run it with that.
+mkdir -p /boot/home/config/packages
+for p in packages/*.hpkg; do
+	case $p in *_source-*|*_debuginfo-*) continue ;; esac
+	cp -n $p /boot/home/config/packages/
+done
+sleep 60
+PY=/boot/home/config/bin/python3.10
+mark "full python: $($PY -c 'import zlib, lzma, bz2, ssl, sys; print(sys.version)' 2>&1 | tail -1)"
+mark "network: $($PY -c 'import urllib.request as u; print(u.urlopen("https://downloads.xiph.org/releases/ogg/", timeout=30).status)' 2>&1 | tail -1)"
+[ -x $PY ] || { mark "no full python"; mark "end $(date +%s)"; exit 1; }
+
+# The probe recipes stay outside the tree until now: --do-bootstrap builds
+# every recipe it finds.
+cp -r /boot/home/phase1-extra/* /boot/home/haikuports/
+for port in libogg libvorbis cmake fluidlite; do
+	build $port $PY $HP -y -jJOBS --no-source-packages --missing-dependencies $port
+done
+mark "packages: $(ls packages | tr "\n" " ")"
+mark "end $(date +%s)"
+touch /boot/home/phase1.done
+sync

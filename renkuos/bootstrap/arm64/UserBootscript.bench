@@ -1,0 +1,36 @@
+#!/bin/sh
+# vCPU benchmark: a serial fork/exec loop (what configure does) and a parallel
+# C++ compile (what make -jN does). Markers go to serial.
+mark() { echo "BENCH $*" > /dev/dprintf; }
+date -s @HOST_EPOCH > /dev/null
+mark "hello $(date +%s)"
+N=NCPU
+rm -rf /boot/home/bench; mkdir -p /boot/home/bench; cd /boot/home/bench
+t0=$(date +%s); i=0
+while [ $i -lt 1000 ]; do /bin/true; i=$((i + 1)); done
+mark "fork1000 $(( $(date +%s) - t0 ))"
+t0=$(date +%s)
+sh -c 'i=0; while [ $i -lt 300 ]; do echo "int f$i(void){return $i;}" > c$i.c; gcc -c c$i.c -o c$i.o; i=$((i + 1)); done'
+mark "serialcc300 $(( $(date +%s) - t0 ))"
+i=0; objs=
+while [ $i -lt 48 ]; do
+	cat > u$i.cpp <<SRC
+#include <map>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <sstream>
+std::string g$i(const std::vector<int>& v) {
+	std::map<std::string, int> m; std::ostringstream o;
+	for (int x : v) m[std::to_string(x)] += x;
+	for (auto& p : m) o << p.first << p.second;
+	std::string s = o.str(); std::sort(s.begin(), s.end()); return s;
+}
+SRC
+	objs="$objs u$i.o"; i=$((i + 1))
+done
+printf 'all:%s\n%%.o: %%.cpp\n\tg++ -O2 -c $< -o $@\n' "$objs" > Makefile
+t0=$(date +%s)
+make -j$N > make.log 2>&1
+mark "make48 rc $? $(( $(date +%s) - t0 ))"
+mark "end"
