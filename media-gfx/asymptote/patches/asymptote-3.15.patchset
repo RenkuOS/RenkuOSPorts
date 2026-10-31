@@ -280,3 +280,29 @@ index acf3879..41a633c 100644
 -- 
 2.56.0
 
+
+From aa2c9cbda4e68ea0f1d5bb9f63ded6209d080834 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Joachim=20Mairb=C3=B6ck?= <j.mairboeck@gmail.com>
+Date: Sat, 31 Oct 2026 20:34:41 +0100
+Subject: fix build on 32 bit systems part 2
+
+
+diff --git a/v3dfile.h b/v3dfile.h
+index 5dbc77f..e73b748 100644
+--- a/v3dfile.h
++++ b/v3dfile.h
+@@ -86,7 +86,10 @@ protected:
+   void writeContent(xdr::oxstream& ox) const override
+   {
+     size_t n=str.size();
+-    ox << n;
++    if constexpr(sizeof(size_t) == 4)
++      ox << (uint32_t) n;
++    else
++      ox << (uint64_t) n;
+     for(size_t i=0; i < n; ++i)
+       ox << (xdr::xbyte) str[i];
+ 
+-- 
+2.56.0
+
