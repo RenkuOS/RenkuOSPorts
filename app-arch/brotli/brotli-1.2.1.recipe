@@ -7,7 +7,7 @@ methods. It is similar in speed with deflate but offers more dense compression."
 HOMEPAGE="https://github.com/google/brotli"
 COPYRIGHT="2009, 2010, 2013-2026 Brotli Authors"
 LICENSE="MIT"
-REVISION="1"
+REVISION="2"
 SOURCE_URI="https://github.com/google/brotli/archive/v$portVersion.tar.gz"
 CHECKSUM_SHA256="98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f"
 SOURCE_FILENAME="brotli-$portVersion.tar.gz"
@@ -51,15 +51,36 @@ BUILD_PREREQUIRES="
 	cmd:make
 	"
 
-PYTHON_VERSIONS+=(3.10)
+PYTHON_VERSIONS+=(3.10 3.14)
 
-for i in "${!PYTHON_VERSIONS[@]}"; do
-	pythonVersion=${PYTHON_VERSIONS[$i]}
+for pythonVersion in "${PYTHON_VERSIONS[@]}"; do
 	pythonPackage=python${pythonVersion//.}
 
-	eval "PROVIDES_${pythonPackage}=\"
+	# Not renaming 3.10 packages to avoid needing massive packages rebuilds.
+	# No need for REPLACES then. ToDo: remove the conditional after dropping 3.10.
+	if [ $pythonVersion != 3.10 ]; then
+		# Allows using dot in sub-package names (eg: "_python3.14" vs "_python314"):
+		eval "PACKAGE_NAME_$pythonPackage=${portName}_python$pythonVersion"
+
+		eval "PROVIDES_$pythonPackage=\"
+			${portName}_python$pythonVersion = $portVersion
+			\""
+		if [ -n "$secondaryArchSuffix" ]; then
+			eval "PROVIDES_$pythonPackage+=\"
+			${portBaseName}_python$pythonVersion = $portVersion
+			\""
+		fi
+	fi
+
+	eval "PROVIDES_${pythonPackage}+=\"
 		${portName}_$pythonPackage = $portVersion
 		\""
+	if [ -n "$secondaryArchSuffix" ]; then
+		eval "PROVIDES_$pythonPackage+=\"
+			${portBaseName}_$pythonPackage = $portVersion
+			\""
+	fi
+
 	eval "REQUIRES_$pythonPackage=\"
 		haiku$secondaryArchSuffix
 		cmd:python$pythonVersion
@@ -84,23 +105,23 @@ BUILD()
 		-DBROTLI_DISABLE_TESTS=OFF
 
 	make -C build $jobArgs
+
+	for pythonVersion in "${PYTHON_VERSIONS[@]}"; do
+		python=python$pythonVersion
+
+		$python setup.py build
+	done
 }
 
 INSTALL()
 {
 	make -C build install
 
-	for i in "${!PYTHON_VERSIONS[@]}"; do
-		pythonVersion=${PYTHON_VERSIONS[$i]}
+	for pythonVersion in "${PYTHON_VERSIONS[@]}"; do
 		pythonPackage=python${pythonVersion//.}
-
 		python=python$pythonVersion
-		installLocation=$prefix/lib/$python/vendor-packages/
-		export PYTHONPATH=$installLocation:$PYTHONPATH
 
-		mkdir -p $installLocation
-
-		$python setup.py build install \
+		$python setup.py install \
 			--root=/ --prefix=$prefix
 
 		packageEntries $pythonPackage \
@@ -121,10 +142,13 @@ INSTALL()
 
 TEST()
 {
-	for i in "${!PYTHON_VERSIONS[@]}"; do
-		pythonVersion=${PYTHON_VERSIONS[$i]}
+	for pythonVersion in "${PYTHON_VERSIONS[@]}"; do
 		python=python$pythonVersion
-		PYTHONPATH=$PWD/bin/lib.haiku-1-x86_64-cpython-${pythonVersion//.}/ $python -m unittest discover python "*_test.py"
+
+		# Can't use a wildcard here because `uname -r` contains a '~' which can't be expanded correctly.
+		export PYTHONPATH=$PWD/bin/lib.haiku-$(uname -r)-$(uname -m)-cpython-${pythonVersion//.}
+
+		$python -m unittest discover python "*_test.py"
 	done
 
 	sed -i -e "s|/packages/brotli-.*/cmd~cmake/bin/cmake|/bin/cmake|g" build/CTestTestfile.cmake
