@@ -56,7 +56,7 @@ stageA() {
 		[ -e /boot/home/phaseA/$port ] && continue
 		# A stop right after a build can lose the marker but not the package.
 		ls packages/$port-[0-9]*.hpkg > /dev/null 2>&1 && { echo 0 > /boot/home/phaseA/$port; continue; }
-		build A-$port $HP -y -jJOBS --no-source-packages --missing-dependencies $port
+		build A-$port $HP -y -jJOBS --no-package-obsoletion --no-source-packages --missing-dependencies $port
 		echo $r > /boot/home/phaseA/$port
 	done
 	# A package that has a _bootstrap version installed stays out of the system
@@ -72,6 +72,8 @@ stageA() {
 		ls /boot/system/packages/$name-*.hpkg > /dev/null 2>&1 && skip=1
 		[ -n "$skip" ] || cp $p /boot/system/packages/
 	done
+	# Without this a stop soon after leaves truncated packages behind.
+	sync
 	sleep 60
 	mark "stage A: $(ls /boot/home/phaseA | wc -l) ports tried, failed: $(grep -L "^0$" /boot/home/phaseA/* 2> /dev/null | xargs -n1 basename 2> /dev/null | tr "\n" " ")"
 	mark "system packages: $(ls /boot/system/packages | wc -l)"
@@ -80,40 +82,34 @@ LIGHT="perl m4 autoconf automake libtool autoconf_archive diffutils patch which 
 	tar unzip sed gawk make pkgconf libiconv bzip2 lz4 zlib ncurses6 readline libedit
 	libffi expat sqlite gperf help2man file libpng16 libpcre2 freetype gmp mpfr mpfr3
 	mpc nasm openssl ninja coreutils bison libpaper2 tiff4.4 ca_root_certificates"
-HEAVY="binutils gcc icu67 icu74 llvm19 llvm21 llvm23"
 
-# Stage 2 of docs/develop/packages/Bootstrapping.rst. It skips ports whose
-# main package exists, so a reboot resumes where the last boot stopped.
-if [ ! -e /boot/home/phase1.bootstrap-done ]; then
-	for set in "$LIGHT" "$LIGHT $HEAVY"; do
-		stageA $set
-		: > /boot/home/phase1-bootstrap.log
-		build bootstrap $HP -y -jJOBS --do-bootstrap
-		[ $r = 0 ] && { touch /boot/home/phase1.bootstrap-done; break; }
-		grep -aq "None of these cyclic dependencies can be built" \
-			/boot/home/phase1-bootstrap.log || break
-	done
-fi
+# --do-bootstrap obsoleted every package it found and then crashed. With gettext's
+# documentation tools cut (RenkuOSPorts branch bootstrap/arm64), the way to a full
+# Python has no cycle left, so build it like stage A.
+stageA $LIGHT gettext xz_utils python3.10
 mark "packages: $(ls packages | tr "\n" " ")"
 
 # HaikuPorter runs on the bootstrap Python, which cannot unpack .tar.gz
-# sources, so install the full Python and run it with that.
-mkdir -p /boot/home/config/packages
-for p in packages/*.hpkg; do
-	case $p in *_source-*|*_debuginfo-*) continue ;; esac
-	cp -n $p /boot/home/config/packages/
-done
-sleep 60
-PY=/boot/home/config/bin/python3.10
+# sources, so run it with the full one. That replaced python3.10_bootstrap and
+# the zlib, libffi, ncurses6, and expat bootstrap packages in the system
+# directory before this boot. The full packages provide the same names, and a
+# copy in ~/config/packages never activated next to the bootstrap ones.
+PY=/boot/system/bin/python3.10
 mark "full python: $($PY -c 'import zlib, lzma, bz2, ssl, sys; print(sys.version)' 2>&1 | tail -1)"
 mark "network: $($PY -c 'import urllib.request as u; print(u.urlopen("https://downloads.xiph.org/releases/ogg/", timeout=30).status)' 2>&1 | tail -1)"
-[ -x $PY ] || { mark "no full python"; mark "end $(date +%s)"; exit 1; }
+# python3.10_bootstrap also installs this path, so check for the modules it lacks.
+$PY -c 'import zlib, lzma, bz2, ssl' 2> /dev/null ||
+	{ mark "no full python: swap the bootstrap packages first"; mark "end $(date +%s)"; exit 1; }
 
-# The probe recipes stay outside the tree until now: --do-bootstrap builds
-# every recipe it finds.
-cp -r /boot/home/phase1-extra/* /boot/home/haikuports/
-for port in libogg libvorbis cmake fluidlite; do
-	build $port $PY $HP -y -jJOBS --no-source-packages --missing-dependencies $port
+# Add the probe recipes. Keep files already in the tree, so a fix made there
+# survives the next boot.
+cp -rn /boot/home/phase1-extra/* /boot/home/haikuports/
+# The guest has no git yet, so apply patches with patch(1) instead of an implicit git repo.
+# --missing-dependencies scheduled curl ahead of libpsl, which it build-requires,
+# so build libpsl on its own first.
+for port in libogg libvorbis libpsl cmake fluidlite; do
+	ls packages/$port-[0-9]*.hpkg > /dev/null 2>&1 && continue
+	build $port $PY $HP -y -jJOBS --no-package-obsoletion --no-source-packages --no-git-repo --missing-dependencies $port
 done
 mark "packages: $(ls packages | tr "\n" " ")"
 mark "end $(date +%s)"

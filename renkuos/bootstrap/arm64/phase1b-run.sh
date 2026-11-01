@@ -1,7 +1,7 @@
 #!/bin/bash
 # Phase 1 bootstrap: boot work.image (a one-time copy of pristine.image) until the
 # UserBootscript reports "PHASE1 end". A crashed or silent guest is rebooted on the
-# same image, and --do-bootstrap resumes from the packages it already built.
+# same image, and the boot script resumes from the packages it already built.
 # Only this script's own QEMU is touched (by PID).
 # Environment: BUILD_ROOT, GEN_DIR, SMP (vCPUs, default 8), GUEST_MB, JOBS.
 HERE=$(cd "$(dirname "$0")" && pwd)

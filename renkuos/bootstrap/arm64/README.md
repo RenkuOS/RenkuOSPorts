@@ -14,6 +14,7 @@ planning notes.
 | `UserBootscript` | guest | Builds the ports. `phase1b-run.sh` substitutes `HOST_EPOCH` and `JOBS` and writes it into the image before each boot. |
 | `bfsq.sh` | build host | Runs `fs_shell` commands against the image's BFS partition while QEMU is off. |
 | `fetch-recipe.sh` | build host | Downloads a recipe's sources into `download/` with the `.uri` files HaikuPorter expects. The guest has no curl or wget. |
+| `temp-guard.sh` | build host | Logs the CPU temperature every minute to `logs/cputemp.log`. It pauses the guest at 85°C and resumes it below 70°C. |
 | `monitor.sh` | your machine | Waits over ssh for the next failure, watchdog kill, reboot, or stage change, then prints it. |
 | `run-bench.sh`, `UserBootscript.bench` | build host | Measures serial and parallel build speed at several vCPU counts. |
 
@@ -21,6 +22,14 @@ planning notes.
 `$BUILD_ROOT/wt-phase1/gen.arm64-bootstrap` (override with `GEN_DIR`), with
 `phase1b/pristine.image` and the boot script in `phase1b/UserBootscript`. The image's BFS
 partition starts at sector 73728.
+
+The host tools need two paths in place:
+
+- `fs_shell` has its attributes directory compiled in under `/home/kevin/haiku-build`. If
+  the build root is somewhere else, make that path a symlink to it.
+- The host `package create`, used to rebuild a rigged source package, looks for
+  `$GEN_DIR/../data/system`. Link `$GEN_DIR/../data` to the `data` directory of a Haiku
+  source tree.
 
 ## What the boot script does
 
@@ -31,10 +40,18 @@ partition starts at sector 73728.
    schedules cyclic ports, and it only looks for their prerequisites in
    `/boot/system/packages`. No `_bootstrap` package set, on any architecture, provides
    perl, autoconf, diffutils, or libiconv.
-3. Runs `haikuporter --do-bootstrap`. If the cycle still cannot start, it builds a heavy set
-   (binutils, gcc, ICU, and LLVM) and tries once more.
-4. Installs the resulting full Python, which HaikuPorter needs to unpack `.tar.gz` sources,
-   and builds the target ports with it.
+3. Builds gettext, xz_utils, and the full python3.10 the same way. This needs the gettext
+   cut on the `bootstrap/arm64` branch, which takes groff and makeinfo out of the cycle.
+   `--do-bootstrap` is not used: with truncated system packages it obsoleted every package
+   and then crashed.
+4. Runs HaikuPorter with the full Python, which it needs to unpack `.tar.gz` sources, and
+   builds the target ports with `--no-git-repo`.
+
+Before the boot that runs step 4, swap the packages by hand with `bfsq.sh`. Move
+`python3.10_bootstrap` and the zlib, libffi, ncurses6, and expat bootstrap packages out of
+`/boot/system/packages`, then copy in the full packages and their `_devel` packages. Each
+pair provides the same names, so the two never activate together, even with the full ones
+in `~/config/packages`.
 
 Each finished port is recorded, so a reboot resumes where the last boot stopped.
 
@@ -47,5 +64,13 @@ Each finished port is recorded, so a reboot resumes where the last boot stopped.
   and hung again on the retry.
   The boot script's watchdog kills any `conftest` after an hour without log output.
 - **libtool needed git.** Its recipe ran `./bootstrap`, which clones gnulib. Fixed on `main`.
+- **Phase 1 times** at 8 vCPUs on an i9-12900K: gettext 1 h 51 min, python3.10 2 h 54 min
+  (with zstd and openssl3), cmake with python3.14 and curl about 3 h 30 min, and libogg,
+  libvorbis, and fluidlite under 5 minutes each.
+- **`fs_shell` `cp` does not overwrite.** Run `rm` on the file first.
+- **HaikuPorter caches parsed recipes** in `repository/recipeCache`. Delete a recipe's entry
+  after editing it in the image.
+- **No git in the guest.** HaikuPorter applies patches through an implicit git repository
+  unless it runs with `--no-git-repo`.
 - **launch_daemon stall.** A pipe without `O_CLOEXEC` stalled 6 of 11 boots in one test.
   Fixed in RenkuOS/Source PR #231.
