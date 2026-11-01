@@ -183,6 +183,13 @@ BUILD()
 		export OPT+=" -O0"
 		maybeEnableOptimizations=
 	fi
+	# bootstrap/arm64: the bootstrap gcc has no LTO support, and the PGO training
+	# run would take hours under emulation. Build -O2, in parallel.
+	if [ "$effectiveTargetArchitecture" = arm64 ]; then
+		export OPT="-Wall -O2"
+		maybeEnableOptimizations=
+		forceParallelBuild=true
+	fi
 
 	runConfigure --omit-dirs binDir,includeDir ./configure \
 		--bindir=$commandBinDir \
