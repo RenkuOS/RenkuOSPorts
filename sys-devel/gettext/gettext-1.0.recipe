@@ -122,18 +122,19 @@ BUILD_REQUIRES="
 	devel:libiconv$secondaryArchSuffix
 	devel:libncurses$secondaryArchSuffix
 	"
+# bootstrap/arm64: groff and makeinfo are dropped from the prerequisites. groff
+# pulls in netpbm, jasper, and mesa, and makeinfo (texinfo) needs gettext. Neither
+# is used: the release tarball ships its man pages and info manual already built.
 BUILD_PREREQUIRES="
 	cmd:aclocal
 	cmd:autoconf
 	cmd:automake
 	cmd:autoheader
 	cmd:gcc$secondaryArchSuffix
-	cmd:groff
 	cmd:gzip
 	cmd:ld$secondaryArchSuffix
 	cmd:libtoolize$secondaryArchSuffix
 	cmd:make
-	cmd:makeinfo
 	"
 
 BUILD()
@@ -145,7 +146,7 @@ BUILD()
 		--disable-rpath \
 		--disable-static \
 		--disable-maintainer-mode
-	make $jobArgs AUTOCONF=: AUTOMAKE=: AUTOHEADER=: ACLOCAL=:
+	make $jobArgs AUTOCONF=: AUTOMAKE=: AUTOHEADER=: ACLOCAL=: MAKEINFO=:
 }
 
 INSTALL()
