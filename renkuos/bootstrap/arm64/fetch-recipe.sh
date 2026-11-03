@@ -8,12 +8,13 @@ for recipe in "$@"; do
 	portVersion=${base##*-}
 	vars=$(portVersion=$portVersion bash -c '
 		secondaryArchSuffix= effectiveTargetArchitecture=arm64 targetArchitecture=arm64
-		portVersionedName='"$base"' portName='"${base%-*}"'
+		portVersionedName='"$base"' portName='"${base%-*}"' portBaseName='"${base%-*}"'
 		defineDebugInfoPackage() { :; }
 		getPackagePrefix() { :; }
 		. "'"$recipe"'" > /dev/null 2>&1
-		for n in "" _2 _3 _4 _5 _6; do
-			u=SOURCE_URI$n c=CHECKSUM_SHA256$n f=SOURCE_FILENAME$n
+		# Every source: SOURCE_URI, SOURCE_URI_2, and suffixes like _001 in bash.
+		for u in $(compgen -A variable SOURCE_URI); do
+			n=${u#SOURCE_URI} c=CHECKSUM_SHA256${u#SOURCE_URI} f=SOURCE_FILENAME${u#SOURCE_URI}
 			# A list of mirrors spans several lines, so put it on one.
 			[ -n "${!u}" ] && echo "$(echo ${!u})|${!c}|${!f}"
 		done')
