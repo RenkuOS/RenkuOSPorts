@@ -1,0 +1,67 @@
+Build the Haiku video driver without OpenGL.
+
+Some uses of the GL view were outside the SDL_VIDEO_OPENGL guards, and
+SDL_BApp.h got AppKit.h and WindowScreen.h only through OpenGLKit.h.
+
+--- a/src/main/haiku/SDL_BApp.h
++++ b/src/main/haiku/SDL_BApp.h
+@@ -24,6 +24,8 @@
+ #include <Path.h>
+ #include <InterfaceKit.h>
+ #include <LocaleRoster.h>
++#include <AppKit.h>
++#include <WindowScreen.h>
+ #ifdef SDL_VIDEO_OPENGL
+ #include <OpenGLKit.h>
+ #endif
+--- a/src/video/haiku/SDL_bvideo.cc
++++ b/src/video/haiku/SDL_bvideo.cc
+@@ -241,13 +241,17 @@
+     }
+ 
+ 	SDL_BWin *bewin = _ToBeWin(window);
+-	BGLView *_SDL_GLView = bewin->GetGLView();
++#ifdef SDL_VIDEO_OPENGL
++	BView *view = bewin->GetGLView();
++#else
++	BView *view = bewin->GetCurView();
++#endif
+ 
+ 	bewin->Lock();
+ 	if (enabled)
+-		_SDL_GLView->SetEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
++		view->SetEventMask(B_POINTER_EVENTS, B_NO_POINTER_HISTORY);
+ 	else
+-		_SDL_GLView->SetEventMask(0, 0);
++		view->SetEventMask(0, 0);
+ 	bewin->Unlock();
+ 
+     return 0;
+--- a/src/video/haiku/SDL_BWin.h
++++ b/src/video/haiku/SDL_BWin.h
+@@ -156,9 +156,12 @@
+ 
+     void UpdateCurrentView()
+     {
++#ifdef SDL_VIDEO_OPENGL
+         if (_SDL_GLView != NULL) {
+             SetCurrentView(_SDL_GLView);
+-        } else if (_SDL_View != NULL) {
++        } else
++#endif
++        if (_SDL_View != NULL) {
+             SetCurrentView(_SDL_View);
+         } else {
+             SetCurrentView(NULL);
+@@ -457,9 +460,11 @@
+             if (_bitmap != NULL) {
+                 if (_SDL_View != NULL && _cur_view == _SDL_View)
+                     _SDL_View->Draw(Bounds());
++#ifdef SDL_VIDEO_OPENGL
+                 else if (_SDL_GLView != NULL && _cur_view == _SDL_GLView) {
+                     _SDL_GLView->CopyPixelsIn(_bitmap, B_ORIGIN);
+                 }
++#endif
+             }
+             break;
+         }

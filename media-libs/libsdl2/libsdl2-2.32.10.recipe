@@ -10,6 +10,11 @@ REVISION="3"
 SOURCE_URI="https://www.libsdl.org/release/SDL2-$portVersion.tar.gz"
 CHECKSUM_SHA256="5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165"
 PATCHES="libsdl2-$portVersion.patchset"
+# bootstrap/arm64: arm64 has no Mesa yet, and the video driver needs this patch
+# to build without OpenGL.
+if [ "$effectiveTargetArchitecture" = arm64 ]; then
+	PATCHES+=" libsdl2-$portVersion-no-opengl.patch"
+fi
 SOURCE_DIR="SDL2-$portVersion"
 
 ARCHITECTURES="all"
@@ -49,11 +54,22 @@ BUILD_PREREQUIRES="
 	cmd:pkg_config$secondaryArchSuffix
 	"
 
+# bootstrap/arm64: arm64 has no Mesa yet, so build without OpenGL.
+if [ "$effectiveTargetArchitecture" = arm64 ]; then
+	REQUIRES="${REQUIRES/lib:libGL$secondaryArchSuffix}"
+	REQUIRES="${REQUIRES/lib:libglu$secondaryArchSuffix}"
+	BUILD_REQUIRES="${BUILD_REQUIRES/devel:libgl$secondaryArchSuffix}"
+	BUILD_REQUIRES="${BUILD_REQUIRES/devel:libglu$secondaryArchSuffix}"
+fi
+
 BUILD()
 {
 	maybeDisableOptimizations=
 	if [ $targetArchitecture == x86_gcc2 ]; then
 		maybeDisableOptimizations="-DSDL_SSE3=OFF"
+	fi
+	if [ "$effectiveTargetArchitecture" = arm64 ]; then
+		maybeDisableOptimizations="-DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF"
 	fi
 
 	cmake . -Bbuild -GNinja $cmakeDirArgs \
