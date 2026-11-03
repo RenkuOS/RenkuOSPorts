@@ -76,6 +76,18 @@ BUILD_PREREQUIRES="
 	cmd:pkg_config$secondaryArchSuffix
 	"
 
+# bootstrap/arm64: arm64 has no Mesa yet, so build without OpenGL. That leaves
+# out jiv, the viewer.
+openGl=ON
+if [ "$effectiveTargetArchitecture" = arm64 ]; then
+	openGl=OFF
+	PROVIDES_tools="${PROVIDES_tools/cmd:jiv$secondaryArchSuffix = $portVersion}"
+	REQUIRES_tools="${REQUIRES_tools/lib:libGL$secondaryArchSuffix}"
+	REQUIRES_tools="${REQUIRES_tools/lib:libglu$secondaryArchSuffix}"
+	BUILD_REQUIRES="${BUILD_REQUIRES/devel:libGL$secondaryArchSuffix}"
+	BUILD_REQUIRES="${BUILD_REQUIRES/devel:libglu$secondaryArchSuffix}"
+fi
+
 TEST_REQUIRES="
 	cmd:awk
 	"
@@ -87,7 +99,7 @@ BUILD()
 		-DCMAKE_INSTALL_DOCDIR=$documentationDir/packages/jasper \
 		-DJAS_ENABLE_AUTOMATIC_DEPENDENCIES=OFF \
 		-DCMAKE_SKIP_RPATH=ON \
-		-DJAS_ENABLE_OPENGL=ON \
+		-DJAS_ENABLE_OPENGL=$openGl \
 		-DALLOW_IN_SOURCE_BUILD=TRUE
 
 	make -C buildJ

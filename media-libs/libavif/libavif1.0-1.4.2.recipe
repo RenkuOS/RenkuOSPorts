@@ -89,6 +89,17 @@ BUILD_PREREQUIRES="
 	cmd:pkg_config$secondaryArchSuffix
 	"
 
+# bootstrap/arm64: rav1e is written in Rust, which does not build for arm64
+# Haiku, so build without the AV1 encoder. dav1d still decodes.
+rav1e=SYSTEM
+if [ "$effectiveTargetArchitecture" = arm64 ]; then
+	rav1e=OFF
+	REQUIRES="${REQUIRES/lib:librav1e$secondaryArchSuffix}"
+	REQUIRES_devel="${REQUIRES_devel/devel:librav1e$secondaryArchSuffix}"
+	REQUIRES_tools="${REQUIRES_tools/lib:librav1e$secondaryArchSuffix}"
+	BUILD_REQUIRES="${BUILD_REQUIRES/devel:librav1e$secondaryArchSuffix}"
+fi
+
 defineDebugInfoPackage libavif1.0$secondaryArchSuffix \
 	"$libDir"/libavif.so.$libVersion
 
@@ -103,7 +114,7 @@ BUILD()
 		$cmakeDirArgs \
 		-DAVIF_BUILD_APPS=ON \
 		-DAVIF_CODEC_DAV1D=SYSTEM \
-		-DAVIF_CODEC_RAV1E=SYSTEM \
+		-DAVIF_CODEC_RAV1E=$rav1e \
 		-DAVIF_CODEC_SVT=OFF \
 		-DAVIF_LIBSHARPYUV=SYSTEM \
 		-DAVIF_LIBYUV=OFF
