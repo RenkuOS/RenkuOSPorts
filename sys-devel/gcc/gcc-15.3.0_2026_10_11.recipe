@@ -7,8 +7,9 @@ LICENSE="GNU GPL v3
 	GNU LGPL v3"
 REVISION="1"
 gccVersion="${portVersion%%_*}"
-SOURCE_URI="https://ftpmirror.gnu.org/gcc/gcc-$gccVersion/gcc-$gccVersion.tar.xz
-	https://ftp.gnu.org/gnu/gcc/gcc-$gccVersion/gcc-$gccVersion.tar.xz"
+# bootstrap/arm64: the bootstrap HaikuPorter does not strip the tab from a
+# second mirror line and fails to parse it, so list one mirror only.
+SOURCE_URI="https://ftpmirror.gnu.org/gcc/gcc-$gccVersion/gcc-$gccVersion.tar.xz"
 CHECKSUM_SHA256="fa59c1beef8995f27c4d71c1df227587189315d3e6faff1bb4306e61b0c530eb"
 SOURCE_DIR="gcc-$gccVersion"
 PATCHES="gcc-$portVersion.patchset"
