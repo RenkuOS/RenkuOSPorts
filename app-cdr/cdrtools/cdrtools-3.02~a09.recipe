@@ -106,6 +106,12 @@ patchInsdir()
 
 PATCH()
 {
+	# bootstrap/arm64: the build system picks its rules by `uname -m` and has
+	# none for arm64 Haiku. The Haiku rules do not depend on the CPU.
+	if [ "$targetArchitecture" = arm64 ]; then
+		ln -s bepc-haiku-gcc.rul RULES/arm64-haiku-gcc.rul
+	fi
+
 	allMakefiles="$(find . -name Makefile\* -o -name \*.mk)"
 
 	patchInsdir bin $relativeBinDir $allMakefiles
