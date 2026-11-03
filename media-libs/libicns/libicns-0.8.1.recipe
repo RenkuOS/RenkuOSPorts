@@ -58,12 +58,15 @@ BUILD_PREREQUIRES="
 	cmd:ld$secondaryArchSuffix
 	cmd:libtoolize$secondaryArchSuffix
 	cmd:make
+	cmd:pkg_config$secondaryArchSuffix
 	"
 
 BUILD()
 {
 	autoreconf -fi
-	runConfigure ./configure --disable-static
+	# openjpeg 2.5.4 installs its headers in openjpeg-2.5, off the default path.
+	CPPFLAGS="$(pkg-config --cflags libopenjp2)" \
+		runConfigure ./configure --disable-static
 	make $jobArgs
 }
 

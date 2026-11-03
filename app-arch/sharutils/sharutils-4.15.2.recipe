@@ -51,7 +51,9 @@ BUILD_PREREQUIRES="
 BUILD()
 {
 	touch doc/*.info
-	runConfigure ./configure \
+	# shar-opts.h defines program_name in every file that includes it, which
+	# GCC 10 and newer reject unless told to use common symbols.
+	CFLAGS="-O2 -fcommon" runConfigure ./configure \
 		--disable-nls
 	echo "#define HAVE_STDBOOL_H 1" >> config.h
 	make
