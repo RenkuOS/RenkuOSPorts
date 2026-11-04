@@ -13,7 +13,9 @@ PATCHES="libsdl2-$portVersion.patchset"
 # bootstrap/arm64: arm64 has no Mesa yet, and the video driver needs this patch
 # to build without OpenGL.
 if [ "$effectiveTargetArchitecture" = arm64 ]; then
-	PATCHES+=" libsdl2-$portVersion-no-opengl.patch"
+	PATCHES+="
+		libsdl2-$portVersion-no-opengl.patch
+		"
 fi
 SOURCE_DIR="SDL2-$portVersion"
 
