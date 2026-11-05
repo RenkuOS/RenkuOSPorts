@@ -12,7 +12,9 @@ planning notes.
 |---|---|---|
 | `phase1b-run.sh` | build host | Boots the work image until the boot script reports `PHASE1 end`. It restarts a guest that crashes or stays silent for 40 minutes, and copies new packages off the image after every boot. |
 | `UserBootscript` | guest | Builds the ports. `phase1b-run.sh` substitutes `HOST_EPOCH` and `JOBS` and writes it into the image before each boot. |
-| `UserBootscript.nightly` | guest | After Phase 1, builds the ports in `nightly-ports.txt` from the RenkuOSPorts tree, two tries each. Copy it to `phase1b/UserBootscript` to use it. See "The nightly run" below. |
+| `UserBootscript.nightly` | guest | After Phase 1, builds the ports in `nightly-ports.txt` from the RenkuOSPorts tree, two tries each. See "The nightly run" below. |
+| `prepare-nightly.sh` | build host | Readies the work image for `UserBootscript.nightly` and installs it as the boot script. |
+| `run-nightly.sh` | build host | Runs the whole nightly: prepares the image and runs `phase1b-run.sh`, in two passes when flex or mkdepend is still missing. |
 | `bfsq.sh` | build host | Runs `fs_shell` commands against the image's BFS partition while QEMU is off. |
 | `fetch-recipe.sh` | build host | Downloads a recipe's sources into `download/` with the `.uri` files HaikuPorter expects. The guest has no curl or wget. |
 | `temp-guard.sh` | build host | Logs the CPU temperature every minute to `logs/cputemp.log`. It pauses the guest at 85°C and resumes it below 70°C. |
@@ -58,24 +60,53 @@ Each finished port is recorded, so a reboot resumes where the last boot stopped.
 
 ## The nightly run
 
-`UserBootscript.nightly` runs in the same image after Phase 1. It needs three files in
-`/boot/home`, copied in with `bfsq.sh`: `renkuosports.tar` (the recipe tree),
-`nightly-ports.txt` (from `phase2/resolve.py`), and `nightly-downloads.tar` (every
-source, fetched on the host with `fetch-recipe.sh`). Before the first boot, make these
-changes to the image by hand:
+`UserBootscript.nightly` runs in the same image after Phase 1. Start it with
+`run-nightly.sh <nightly-ports.txt> <nightly-recipes.txt>`, using the lists from
+`phase2/resolve.py`, with QEMU off. Set `PORTS_TREE` to the RenkuOSPorts checkout that
+holds the `download/` directories, and `MAKEFILE_ENGINE` to a
+`makefile_engine-*-any.hpkg` from any Haiku build. `run-nightly.sh` calls
+`prepare-nightly.sh`, which makes these changes to the image:
 
-- **Swap in the real flex and bison.** HaikuPorter takes build tools from
-  `/boot/system/packages` and prefers them to newer builds of the same version. The
+- **Inputs.** It writes `renkuosports.tar` (the tree at `PORTS_REF`, by default
+  `bootstrap/arm64`), the port list, and `nightly-downloads.tar` into `/boot/home`. The
+  sources come from `fetch-recipe.sh`.
+- **The real flex and bison.** HaikuPorter takes build tools from
+  `/boot/system/packages`, and it picks the bootstrap ones there over newer builds. The
   bootstrap flex 2.5.35 is too old for doxygen, and the bootstrap bison's `--version`
-  fails. Replace both with the packages Phase 1 built.
-- **Add `makefile_engine` and `mkdepend`** to `/boot/system/packages`. Ports such as
-  vision build-prerequire `makefile_engine`, which Haiku's own build makes and the
-  bootstrap image leaves out. HaikuPorter only sees it as a system package.
-  `makefile_engine` is an `any` package, so take it from an x86_64 build, but recompress
-  it first with `package recompress -z zlib`. The arm64 bootstrap `package` tool has no
-  zstd, and HaikuPorter skips a package it cannot read without saying why.
-- **Make debug_server kill crashed programs** instead of waiting for a debugger:
-  `default_action kill` in `~/config/settings/system/debug_server/settings`.
+  fails. The script moves both to `/boot/home/removed-bootstrap` and installs the real
+  ones. Phase 1 builds bison, but not flex, which needs `autopoint` and `makeinfo`. So
+  when flex or mkdepend is missing, `run-nightly.sh` first runs a short pass that builds
+  just those two, then prepares the image again for the full list.
+- **`makefile_engine` and `mkdepend`** in `/boot/system/packages`. Ports such as vision
+  build-prerequire `makefile_engine`, which Haiku's own build makes and the bootstrap
+  image leaves out. HaikuPorter only sees it as a system package. The script recompresses
+  it with zlib, because the arm64 bootstrap `package` tool has no zstd and HaikuPorter
+  skips a package it cannot read without saying why.
+- **debug_server kills crashed programs** instead of waiting for a debugger.
+- **A regular `haiku`, if `HAIKU_GEN` is set.** The bootstrap `haiku` package leaves out
+  libmail, libmedia, libgame, and a few other libraries that ports such as pe and libsdl2
+  link. Set `HAIKU_GEN` to the generated directory of a regular arm64 build (configured
+  with `--cross-tools-prefix`, not `@bootstrap-raw`) after `jam -q haiku.hpkg
+  haiku_devel.hpkg`. The script swaps both packages in and also replaces
+  `EFI/BOOT/BOOTAA64.EFI` with that build's loader, because a loader and kernel from
+  different commits can disagree on `kernel_args`. A bootstrap loader from before
+  `2fe0ded501` crashes a newer kernel right after `ExitBootServices`.
+- **The fonts and firmware the regular `haiku` requires.** HaikuPorter will not use a
+  `haiku` package whose requirements it cannot resolve. It resolves noto and coreutils
+  from the packages it built, but noto_sans_cjk_jp and the four wifi firmware packages
+  come from elsewhere. The script installs them as system packages, recompressed with
+  zlib. It takes `mediatek_wifi_firmwares` from `HAIKU_GEN` (run `jam -q
+  mediatek_wifi_firmwares.hpkg` there first) and the others from `ANY_PACKAGES`, a
+  directory of `*-any.hpkg` files such as an x86_64 build's `download/`.
+- **Empty locale settings.** The regular `haiku` has FirstBootPrompt. Until
+  `~/config/settings/Locale settings` exists, the launch_daemon starts it instead of the
+  desktop, which is what runs the boot script. Without the file, the first boot sits at an
+  invisible language prompt until `phase1b-run.sh` restarts it 40 minutes later. The
+  script writes an empty one, which the Locale Kit reads as en_US.
+
+Run `prepare-nightly.sh` again after changing recipes or the port list. Ports that
+already built stay built. Delete a port's marker in `/boot/home/nightly` to build it
+again.
 
 The first arm64 nightly ended on 2026-11-02 with 382 packages, counting Phase 1's. At 8
 vCPUs, gcc alone took 11.8 hours. Six ports failed:
@@ -87,6 +118,9 @@ vCPUs, gcc alone took 11.8 hours. Six ports failed:
   `CatKey::HashFun` hashes plain `char`, which is unsigned on arm64 and signed on x86.
   The fix belongs in RenkuOS/Source. makefile-engine compiles catalogs for every app
   that has them, so this affects many ports.
+
+All six built on 2026-11-03, on a regular `haiku` from RenkuOS/Source at the commit of
+PR #278, which fixes `HashFun`. That brought the total to 400 packages.
 
 ## Findings
 
