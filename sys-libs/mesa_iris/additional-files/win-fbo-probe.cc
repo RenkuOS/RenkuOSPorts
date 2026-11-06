@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * win-fbo-probe - draw IDENTICAL geometry in the SAME EGL context into
  *   (a) an application FBO (read back with glReadPixels), and
  *   (b) the Haiku window/default framebuffer (read back via our BitmapHook).
@@ -83,6 +84,7 @@ dump_ppm(const char *path, const unsigned char *base, int stride, int w, int h,
 class MyHook : public BitmapHook {
 public:
 	MyHook() : fCurrent(NULL), fFrames(0) {}
+	unsigned Frames() const { return fFrames; }
 	virtual void GetSize(uint32_t &width, uint32_t &height)
 	{
 		width = WIDTH;
@@ -274,6 +276,10 @@ main(void)
 	eglDestroySurface(dpy, s);
 	eglTerminate(dpy);
 	free(buf);
+	if (hook.Frames() == 0) {
+		printf("FAIL: no window bitmap was presented\n");
+		++failures;
+	}
 	printf("%s failures=%u\n", failures ? "FAIL" : "PASS", failures);
 	return failures ? 1 : 0;
 }

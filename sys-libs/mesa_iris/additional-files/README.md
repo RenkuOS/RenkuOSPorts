@@ -1,6 +1,6 @@
 # Experimental Intel Gen9 graphics stack
 
-This package set is for x86_64 Haiku and trusted graphics clients. The original
+This package set is for x86_64 RenkuOS and trusted graphics clients. The original
 hardware tests used Haiku hrev60232 and Intel HD Graphics 515 (8086:191e).
 The packaged standalone driver is a new build. It still needs a cold-boot test
 on this hardware. Suspend, reset recovery and untrusted GPU command submission
@@ -16,8 +16,8 @@ the home location supplies the override without changing the system package.
 From the directory that contains the new hpkg files:
 
 ```
-pkgman install -H ./intel_extreme_gen9-2026.10.16-1-x86_64.hpkg
-pkgman install ./libglvnd-1.7.0-5-x86_64.hpkg ./mesa_iris-25.3.6-1-x86_64.hpkg
+pkgman install -H ./intel_extreme_gen9-2026.10.16-2-x86_64.hpkg
+pkgman install ./libglvnd-1.7.0-6-x86_64.hpkg ./mesa_iris-25.3.6-3-x86_64.hpkg
 ```
 
 The Mesa package conflicts with the old Mesa renderer packages. Review the
@@ -41,6 +41,7 @@ turn it on. A warm restart was not sufficient during the original driver tests.
 ```
 intel-gen9-stress
 intel-gen9-fbo-test
+intel-gen9-texture-upload-test
 intel-gen9-present-test
 ```
 
@@ -69,9 +70,9 @@ the binaries. The recipes pin source archives and include every port patch,
 the libdrm headers, and the pre-generated Intel shaders. They do not depend on
 files from an agent's /tmp directory. The shader README describes regeneration.
 
-Use at most three compiler jobs with 12 GB of VM RAM. Build outside the live
-machine when possible. The kernel package permits hrev60228 through hrev60232. Build and test the
-driver again before you increase this range for a new Haiku revision;
+Use a low compiler job count. Build outside the live machine when possible.
+The kernel package requires exactly r1~beta6_hrev60072_580. Build and test the
+driver again before changing this ABI pin for a new RenkuOS revision;
 this port uses private kernel interfaces and does not promise a stable ABI.
 
 ## BGRA texture uploads (revision 2)

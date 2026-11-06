@@ -19,7 +19,11 @@ For each gfx gen in {80,90,110,120,125,200,300}:
 The Haiku build only needs the `_binding.cpp` + `_binding.h` files; the `.spv` are kept
 for reference/regeneration.
 
-## How they were produced (reproducible)
+## Generation procedure
+
+The committed artifacts are the native-build inputs. The procedure below
+records their generation; it is not a bit-for-bit reproducibility claim for
+an unpinned host toolchain or Python environment.
 
 ```sh
 # Host: Linux, clang/LLVM 23 + libclc (pkg-config libclc) + spirv-tools + llvm-spirv.

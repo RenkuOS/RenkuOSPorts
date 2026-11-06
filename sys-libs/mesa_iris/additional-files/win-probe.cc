@@ -1,4 +1,5 @@
 /*
+ * SPDX-License-Identifier: MIT
  * win-probe - drive the Haiku EGL window-surface present path with our own
  * BitmapHook, draw a known pattern, and dump both what the present hands back
  * (the BitmapHook bitmap) and a reference GL read-back, for comparison.
@@ -48,7 +49,9 @@ dump_ppm(const char *path, const unsigned char *base, int stride, int w, int h,
 
 class MyHook : public BitmapHook {
 public:
-	MyHook() : fCurrent(NULL), fFrames(0), fWidth(WIDTH), fHeight(HEIGHT) {}
+	MyHook() : fCurrent(NULL), fFrames(0), fExpectedFrame(0), fWidth(WIDTH), fHeight(HEIGHT) {}
+	void ExpectFrame(unsigned frame) { fExpectedFrame = frame; }
+	unsigned Frames() const { return fFrames; }
 	void Resize(uint32_t w, uint32_t h) { fWidth = w; fHeight = h; }
 	virtual void GetSize(uint32_t &width, uint32_t &height)
 	{
@@ -95,8 +98,12 @@ public:
 				float u = (x + .5f) / w, v = (y + .5f) / h;
 				bool colored = ((u > .05f && u < .45f) || (u > .55f && u < .95f)) &&
 					((v > .05f && v < .45f) || (v > .55f && v < .95f));
-				const unsigned char black[3] = {};
-				const unsigned char *want = colored ? expected[(v > .5f ? 2 : 0) + (u > .5f)] : black;
+				// The background identifies each frame, so stale frames fail.
+				const unsigned char background[3] = {
+					128, (unsigned char)(fExpectedFrame >> 8),
+					(unsigned char)fExpectedFrame
+				};
+				const unsigned char *want = colored ? expected[(v > .5f ? 2 : 0) + (u > .5f)] : background;
 				const unsigned char *pixel = bits + y * bmp->BytesPerRow() + x * 4;
 				if (memcmp(pixel, want, 3) != 0) {
 					if (failures < 8) printf("FAIL full image frame %u at %d,%d BGR=%u,%u,%u expected=%u,%u,%u\n", fFrames, x, y, pixel[0],pixel[1],pixel[2],want[0],want[1],want[2]);
@@ -113,6 +120,7 @@ public:
 private:
 	BBitmap *fCurrent;
 	unsigned fFrames;
+	unsigned fExpectedFrame;
 	uint32_t fWidth, fHeight;
 };
 
@@ -163,7 +171,9 @@ main(void)
 	printf("samples=%d sample_buffers=%d\n", samples, sample_buffers);
 	glDrawBuffer(GL_BACK);
 	glReadBuffer(GL_BACK);
+	unsigned swaps = 0;
 	for (unsigned frame = 0; frame < 300; ++frame) {
+	hook.ExpectFrame(frame);
 	uint32_t width, height;
 	hook.GetSize(width, height);
 	glViewport(0, 0, width, height);
@@ -174,7 +184,8 @@ main(void)
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
 
-	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClearColor((frame & 255) / 255.0f, ((frame >> 8) & 255) / 255.0f,
+		128.0f / 255.0f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	/* four coloured quadrants */
@@ -193,6 +204,12 @@ main(void)
 		++failures;
 		break;
 	}
+	++swaps;
+	if (hook.Frames() != swaps) {
+		printf("FAIL: swap %u delivered %u bitmaps\n", swaps, hook.Frames());
+		++failures;
+		break;
+	}
 	if (glGetError() != GL_NO_ERROR) {
 		++failures;
 		break;
@@ -206,11 +223,14 @@ main(void)
 		    !eglMakeCurrent(dpy, s, s, c)) { ++failures; break; }
 	}
 	}
+	if (swaps != 300 || hook.Frames() != 300)
+		++failures;
 	eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglDestroyContext(dpy, c);
 	eglDestroySurface(dpy, s);
 	eglTerminate(dpy);
-	printf("%s: 300 frame present, %d mismatches\n", failures ? "FAIL" : "PASS", failures);
+	printf("%s: 300 frame present, %d mismatches; swaps=%u bitmaps=%u\n",
+		failures ? "FAIL" : "PASS", failures, swaps, hook.Frames());
 
 	printf("DONE\n");
 	return failures ? 1 : 0;

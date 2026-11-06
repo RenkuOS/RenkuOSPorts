@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #define GL_GLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <GL/gl.h>

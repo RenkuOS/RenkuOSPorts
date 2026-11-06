@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Standalone build of the pinned RenkuOS/Haiku driver sources.
 # Matches Haiku KernelAddon flags; uses the build system's haiku_devel ABI.
 DRIVER_DIR = src/add-ons/kernel/drivers/graphics/intel_extreme

@@ -8,12 +8,13 @@ COPYRIGHT="1999-2026 Brian Paul
 	Intel Corporation
 	2026 Haiku iris port contributors"
 LICENSE="MIT"
-REVISION="2"
+REVISION="3"
 SOURCE_URI="https://archive.mesa3d.org/mesa-$portVersion.tar.xz"
 CHECKSUM_SHA256="59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206"
 SOURCE_DIR="mesa-$portVersion"
 PATCHES="mesa_iris-$portVersion.patchset
-	mesa_iris-$portVersion-iris.patch"
+	mesa_iris-$portVersion-iris.patch
+	mesa_iris-$portVersion-lifetime.patch"
 ADDITIONAL_FILES="intel_gfx110_shaders.spv
 	intel_gfx110_shaders_binding.cpp
 	intel_gfx110_shaders_binding.h
@@ -36,6 +37,7 @@ ADDITIONAL_FILES="intel_gfx110_shaders.spv
 	intel_gfx90_shaders_binding.cpp
 	intel_gfx90_shaders_binding.h
 	README.shaders.md
+	SHADERS-SHA256SUMS
 	drm.h
 	drm_mode.h
 	xf86drm.h
@@ -54,8 +56,9 @@ PROVIDES="
 	cmd:intel_gen9_fbo_test = $portVersion
 	"
 REQUIRES="
-	haiku >= r1~beta6_hrev60228
+	haiku
 	libglvnd >= 1.7.0
+	libglvnd_haiku_egl >= 1
 	lib:libLLVM >= 21
 	lib:libexpat
 	lib:libz
@@ -88,10 +91,12 @@ BUILD_PREREQUIRES="
 	cmd:patch
 	cmd:pkg_config
 	cmd:python3.10
+	cmd:sha256sum
 	"
 
 BUILD()
 {
+	(cd "$portDir/additional-files" && sha256sum -c SHADERS-SHA256SUMS)
 	# Mesa generators need the Python version that provides Mako and PyYAML.
 	mkdir -p haiku-python
 	ln -sf "$(command -v python3.10)" haiku-python/python3
