@@ -1,0 +1,66 @@
+name: Intel Gen9 recipes
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'haiku-drivers/intel_extreme_gen9/**'
+      - 'sys-libs/libglvnd/**'
+      - 'sys-libs/mesa_iris/**'
+      - 'renkuos/graphics/intel-gen9/**'
+      - '.github/workflows/intel-gen9.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Get pinned lint tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          for item in haikuporter:9e7dd99bb3051bf12d48c6d9e87c6788e8a7ce80 haiku-licenses:9b286c358cff9bbb3b15d488022dc7e4dc0e506e; do
+            name=${item%:*}
+            revision=${item#*:}
+            owner=haikuports
+            if [[ $name == haiku-licenses ]]; then owner=waddlesplash; fi
+            git init "$RUNNER_TEMP/$name"
+            git -C "$RUNNER_TEMP/$name" fetch --depth 1 "https://github.com/$owner/$name.git" "$revision"
+            git -C "$RUNNER_TEMP/$name" checkout --detach FETCH_HEAD
+          done
+          printf 'TREE_PATH="%s"\nPACKAGER="CI <ci@example.org>"\nTARGET_ARCHITECTURE="x86_64"\nALLOW_UNTESTED="yes"\n' "$PWD" > "$RUNNER_TEMP/haikuports.conf"
+      - name: Lint libglvnd
+        run: "$RUNNER_TEMP/haikuporter/haikuporter --config=$RUNNER_TEMP/haikuports.conf --licenses=$RUNNER_TEMP/haiku-licenses --lint libglvnd"
+      - name: Lint intel_extreme_gen9
+        run: "$RUNNER_TEMP/haikuporter/haikuporter --config=$RUNNER_TEMP/haikuports.conf --licenses=$RUNNER_TEMP/haiku-licenses --lint intel_extreme_gen9"
+      - name: Lint mesa_iris
+        run: "$RUNNER_TEMP/haikuporter/haikuporter --config=$RUNNER_TEMP/haikuports.conf --licenses=$RUNNER_TEMP/haiku-licenses --lint mesa_iris"
+      - name: Check scripts and generated shader inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n haiku-drivers/intel_extreme_gen9/*.recipe
+          bash -n sys-libs/libglvnd/*.recipe
+          bash -n sys-libs/mesa_iris/*.recipe
+          bash -n renkuos/graphics/intel-gen9/verify.sh
+          cd sys-libs/mesa_iris/additional-files
+          sha256sum -c SHADERS-SHA256SUMS
+      - name: Check the Mesa patch sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/mesa-25.3.6.tar.xz"
+          curl --fail --location --retry 3 https://archive.mesa3d.org/mesa-25.3.6.tar.xz -o "$archive"
+          printf '59217efeac3b64e7ced958324b9db7494f1e0741aeb22d780276514cc1b8f206  %s\n' "$archive" | sha256sum -c -
+          tar -xf "$archive" -C "$RUNNER_TEMP"
+          for patch in mesa_iris-25.3.6.patchset mesa_iris-25.3.6-iris.patch mesa_iris-25.3.6-lifetime.patch; do
+            git -C "$RUNNER_TEMP/mesa-25.3.6" apply --check "$GITHUB_WORKSPACE/sys-libs/mesa_iris/patches/$patch"
+            git -C "$RUNNER_TEMP/mesa-25.3.6" apply "$GITHUB_WORKSPACE/sys-libs/mesa_iris/patches/$patch"
+          done
