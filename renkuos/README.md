@@ -20,6 +20,7 @@ recipe. HaikuPorter ignores it because it contains no recipes.
 | Path | What it is |
 |---|---|
 | `bootstrap/arm64/` | Scripts that build arm64 packages natively on arm64 Haiku under QEMU. See its README. |
+| `graphics/intel-gen9/` | Experimental Mi Air HD 515 graphics-stack build, migration, validation and rollback instructions. |
 
 Changes that are only needed while bootstrapping a new architecture, such as recipe edits
 that break dependency cycles, go on a `bootstrap/<arch>` branch and not on `main`.
