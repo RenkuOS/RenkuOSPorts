@@ -14,6 +14,10 @@
 # ANY_PACKAGES is a directory of *-any.hpkg files, such as the download
 # directory of an x86_64 build, for the packages the regular haiku requires that
 # no arm64 build makes.
+# REBUILD=1 builds every port in the list again, for a changed recipe: it
+# clears the port's marker and moves its main package out of HaikuPorter's
+# packages directory. Bump the recipe's REVISION, because the host keeps the
+# first copy of each package file name.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 R=${BUILD_ROOT:-$HOME/haiku-build}
@@ -81,7 +85,6 @@ if [ -n "$HAIKU_GEN" ]; then
 	done
 fi
 
-git -C "$TREE" archive --format=tar -o $W/renkuosports.tar "$REF" -- . ':!renkuos'
 # fetch-recipe.sh skips files that are already there with the right checksum.
 (cd "$TREE" && git diff --quiet "$REF" -- $(cat "$recipes")) ||
 	echo "warning: the checkout differs from $REF in some recipes; sources follow the checkout"
@@ -93,6 +96,34 @@ printf 'default_action kill\n' > $W/debug_server.settings
 
 SP=/myfs/system/packages H=/myfs/home
 bfsq "ls $SP" "ls $H/config/settings"
+# Keep the home listings apart: HaikuPorter's packages directory has the same
+# file names as the packages checked for in /system/packages below.
+HOME_OUT=$W/bfsq-home.out
+BFSQ_OUT=$HOME_OUT bfsq "ls $H" "ls $H/haikuports/packages"
+
+# The guest keeps the tree between runs and names the commit it is at in
+# nightly-tree.<commit>. Send only the files that changed since then, because
+# HaikuPorter parses every recipe that is newer than its dependency info again,
+# and parsing all of them takes four hours in the emulated guest.
+sha=$(git -C "$TREE" rev-parse "$REF^{commit}")
+base=$(grep -a -o " nightly-tree\.[0-9a-f]\{40\}$" $HOME_OUT | head -1 | cut -d. -f2)
+if [ -n "$base" ] && git -C "$TREE" cat-file -e "$base^{commit}" 2> /dev/null; then
+	mapfile -d '' -t changed < <(git -C "$TREE" diff -z --no-renames --name-only \
+		--diff-filter=d $base $sha -- . ':!renkuos')
+	git -C "$TREE" diff -z --no-renames --name-only --diff-filter=D $base $sha -- . ':!renkuos' |
+		tr '\0' '\n' > $W/renkuosports.removed
+	if [ ${#changed[@]} -gt 0 ]; then
+		git -C "$TREE" archive --format=tar -o $W/renkuosports.tar $sha -- "${changed[@]/#/:(literal)}"
+	else
+		tar -cf $W/renkuosports.tar -T /dev/null
+	fi
+	echo "tree: ${#changed[@]} files changed and $(wc -l < $W/renkuosports.removed) removed since ${base:0:9}"
+else
+	base=
+	git -C "$TREE" archive --format=tar -o $W/renkuosports.tar $sha -- . ':!renkuos'
+fi
+echo $sha > $W/nightly-tree.next
+
 cmds=("mkdir $H/removed-bootstrap")
 for p in $real; do
 	for f in $(grep -a -o "${p}_bootstrap-[^ ]*\.hpkg" $BFSQ_OUT); do
@@ -117,13 +148,26 @@ done
 # settings. An empty file is enough: the Locale Kit then uses en_US.
 [ -n "$haiku" ] && ! grep -a -q " Locale settings$" $BFSQ_OUT &&
 	cmds+=("cp :$W/locale.settings '$H/config/settings/Locale settings'")
+if [ -n "$REBUILD" ]; then
+	cmds+=("mkdir $H/removed-old")
+	for p in $(cat "$ports"); do
+		cmds+=("rm $H/nightly/$p")
+		for f in $(awk -v d="$H/haikuports/packages:" '$0 == d { f = 1; next }
+				/^\/myfs.*:$/ { f = 0 } f { print $NF }' $HOME_OUT | grep "^$p-[0-9].*\.hpkg$"); do
+			cmds+=("cp $H/haikuports/packages/$f $H/removed-old/$f" "rm $H/haikuports/packages/$f")
+		done
+	done
+fi
 cmds+=("mkdir $H/config/settings/system/debug_server"
 	"rm $H/config/settings/system/debug_server/settings"
 	"cp :$W/debug_server.settings $H/config/settings/system/debug_server/settings"
 	"rm $H/renkuosports.tar" "cp :$W/renkuosports.tar $H/renkuosports.tar"
+	"rm $H/renkuosports.removed" "rm $H/nightly-tree.next" "cp :$W/nightly-tree.next $H/nightly-tree.next"
 	"rm $H/nightly-ports.txt" "cp :$ports $H/nightly-ports.txt"
 	"rm $H/nightly-downloads.tar" "cp :$W/nightly-downloads.tar $H/nightly-downloads.tar"
 	"rm $H/nightly.tree" "rm $H/nightly.done")
+[ -f $W/renkuosports.removed ] &&
+	cmds+=("cp :$W/renkuosports.removed $H/renkuosports.removed")
 bfsq "${cmds[@]}"
 
 if [ -n "$haiku" ]; then
@@ -144,7 +188,8 @@ done
 for p in $real; do
 	grep -a -q "${p}_bootstrap-" $BFSQ_OUT && { echo "${p}_bootstrap is still installed"; bad=1; }
 done
-for f in renkuosports.tar nightly-ports.txt nightly-downloads.tar settings ${haiku:+"Locale settings"}; do
+for f in renkuosports.tar nightly-tree.next ${base:+renkuosports.removed} nightly-ports.txt \
+		nightly-downloads.tar settings ${haiku:+"Locale settings"}; do
 	grep -a -q " $f$" $BFSQ_OUT || { echo "missing in image: $f"; bad=1; }
 done
 [ -z "$bad" ] || exit 1

@@ -15,6 +15,8 @@ planning notes.
 | `UserBootscript.nightly` | guest | After Phase 1, builds the ports in `nightly-ports.txt` from the RenkuOSPorts tree, two tries each. See "The nightly run" below. |
 | `prepare-nightly.sh` | build host | Readies the work image for `UserBootscript.nightly` and installs it as the boot script. |
 | `run-nightly.sh` | build host | Runs the whole nightly: prepares the image and runs `phase1b-run.sh`, in two passes when flex or mkdepend is still missing. |
+| `update-packages.sh` | runner | Rebuilds the ports whose recipes changed since the last successful run. See "The package runner" below. |
+| `publish-repo.sh` | runner | Builds the package repository and packs it, and the debug info, for the `arm64-packages` release. |
 | `bfsq.sh` | build host | Runs `fs_shell` commands against the image's BFS partition while QEMU is off. |
 | `fetch-recipe.sh` | build host | Downloads a recipe's sources into `download/` with the `.uri` files HaikuPorter expects. The guest has no curl or wget. |
 | `temp-guard.sh` | build host | Logs the CPU temperature every minute to `logs/cputemp.log`. It pauses the guest at 85°C and resumes it below 70°C. |
@@ -69,7 +71,11 @@ holds the `download/` directories, and `MAKEFILE_ENGINE` to a
 
 - **Inputs.** It writes `renkuosports.tar` (the tree at `PORTS_REF`, by default
   `bootstrap/arm64`), the port list, and `nightly-downloads.tar` into `/boot/home`. The
-  sources come from `fetch-recipe.sh`.
+  sources come from `fetch-recipe.sh`. The guest keeps the tree and records its commit
+  in `/boot/home/nightly-tree.<commit>`, so later runs send only the files changed since
+  then, plus a list of removed files. HaikuPorter parses a recipe again whenever it is
+  newer than its dependency info, and parsing the whole tree takes about 4 hours in the
+  guest.
 - **The real flex and bison.** HaikuPorter takes build tools from
   `/boot/system/packages`, and it picks the bootstrap ones there over newer builds. The
   bootstrap flex 2.5.35 is too old for doxygen, and the bootstrap bison's `--version`
@@ -121,6 +127,70 @@ vCPUs, gcc alone took 11.8 hours. Six ports failed:
 
 All six built on 2026-11-03, on a regular `haiku` from RenkuOS/Source at the commit of
 PR #278, which fixes `HashFun`. That brought the total to 400 packages.
+
+## The package runner
+
+`.github/workflows/arm64-packages.yml` runs every night at 03:00 UTC, and by hand from
+the Actions tab, on a self-hosted runner labeled `renkuos-arm64`. That runner is
+192.168.74.128, a VM next to .122 with 12 vCPUs, 24 GB of memory, and 300 GB of disk. The
+workflow has no pull request or push trigger, because the runner runs this repository's
+code on our own machine.
+
+`update-packages.sh` follows HaikuPorter's buildmaster `update`:
+
+1. It diffs `bootstrap/arm64` from the commit in `$BUILD_ROOT/processed_rev` to the
+   branch's head.
+2. It asks HaikuPorter, running on the host, which active arm64 ports the changed files
+   belong to (`--ports-for-files --active-versions-only`). A recipe for a version arm64
+   does not use, such as gcc 15, does not count.
+3. It keeps the ports we already build or that the nightly list names, and builds them in
+   the guest with `prepare-nightly.sh` (`REBUILD=1`) and `phase1b-run.sh`. The guest
+   cannot download, so the host fetches the sources of every recipe of those ports,
+   including a new version's.
+4. It moves `processed_rev` to the new head only when every port built, so a failed port
+   is tried again the next night.
+
+Bump a recipe's `REVISION` when changing it. The host keeps the first copy of each package
+file name, so a rebuild under the same name would not replace it.
+
+When anything was built, a second job runs `publish-repo.sh` and uploads two archives
+to the `arm64-packages` release, replacing the previous ones. It is a job of its own
+because the job token expires after 24 hours. `$BUILD_ROOT/unpublished` stays until an
+upload succeeds, so a failed upload is tried again the next night.
+
+- `renkuosports-arm64-repo.tar` has `repo`, `repo.info`, `repo.sha256`, and `packages/`,
+  with the newest version of each package. Unpack it where `repo.info`'s `baseurl`
+  points.
+- `renkuosports-arm64-debuginfo.tar` has the `_debuginfo` packages, which images do not
+  need.
+
+A release file can hold at most 2 GiB, and each archive is about 0.7 GB today.
+
+### Setting up the runner
+
+On the VM, as `kevin`, in `~/haiku-build` (the `BUILD_ROOT` the workflow uses):
+
+- `wt-phase1/gen.arm64-bootstrap`, with the work image, and `phase1-packages/bootstrap`,
+  copied from the build that made them. Copy the images with `tar --sparse` over ssh,
+  because `rsync -S` sends their empty space over the network.
+- `phase2/nightly-ports.txt` and `phase2/nightly-recipes.txt`.
+- `RenkuOSPorts`, a clone on `bootstrap/arm64`, with the `download/` directories copied
+  in. The workflow checks out the branch's head there on every run.
+- `haikuporter` and `haiku-licenses`, clones of github.com/haikuports/haikuporter and
+  github.com/waddlesplash/haiku-licenses.
+- `inputs/makefile_engine-*-any.hpkg`, and `inputs/tools/package_repo` with
+  `libroot_build.so`, `libbe_build.so`, and `libpackage_build.so` in `inputs/tools/lib`,
+  all from an x86_64 Haiku build.
+- `processed_rev`, holding the commit the packages were built from.
+- Packages: `qemu-system-arm qemu-efi-aarch64 qemu-utils mtools fdisk git curl python3 gh`
+  and the Haiku build dependencies.
+
+Register the runner in an organization runner group that only RenkuOSPorts can use, with
+the label `renkuos-arm64`, and install it as a service running as `kevin`. The
+repository requires approval for workflows from every outside contributor.
+
+The VM cannot read CPU temperatures, so `temp-guard.sh` does not run there. The host's
+own thermal protection covers it.
 
 ## Findings
 

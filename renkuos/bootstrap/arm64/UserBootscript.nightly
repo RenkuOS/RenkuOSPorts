@@ -44,18 +44,27 @@ build() {
 	sync
 }
 
-# Once: swap the Phase 1 recipes for the RenkuOSPorts tree. The rigged recipes in
-# input-source-packages would shadow the tree's, and HaikuPorter would reuse
-# recipes it cached from them, so move both out of the way.
-if [ ! -e /boot/home/nightly.tree ]; then
-	mkdir -p /boot/home/phase1-tree
-	[ -d input-source-packages ] && mv input-source-packages /boot/home/phase1-tree/
-	rm -rf repository/recipeCache
+# renkuosports.tar holds the whole RenkuOSPorts tree the first time. After that it
+# holds only the files changed since the commit in nightly-tree.<commit>, and
+# renkuosports.removed lists the files to delete. Extracting with -m makes the
+# changed recipes newer than their dependency infos, so HaikuPorter parses only
+# those again.
+if [ -e /boot/home/renkuosports.tar ]; then
+	if [ -e /boot/home/renkuosports.removed ]; then
+		while read -r f; do rm -f "$f"; done < /boot/home/renkuosports.removed
+	else
+		# Swap the Phase 1 recipes for the tree. The rigged recipes in
+		# input-source-packages would shadow the tree's, and HaikuPorter would
+		# reuse recipes it cached from them, so move both out of the way.
+		mkdir -p /boot/home/phase1-tree
+		[ -d input-source-packages ] && mv input-source-packages /boot/home/phase1-tree/
+		rm -rf repository/recipeCache
+	fi
 	tar -xmf /boot/home/renkuosports.tar || { mark "tree: tar failed"; mark "end $(date +%s)"; exit 1; }
-	rm /boot/home/renkuosports.tar
-	touch /boot/home/nightly.tree
+	rm -f /boot/home/renkuosports.tar /boot/home/renkuosports.removed /boot/home/nightly-tree.[0-9a-f]*
+	mv /boot/home/nightly-tree.next /boot/home/nightly-tree.$(cat /boot/home/nightly-tree.next)
 	sync
-	mark "tree: $(ls -d */*/ | wc -l | tr -d " ") port directories"
+	mark "tree: $(ls -d */*/ | wc -l | tr -d " ") port directories, at $(ls /boot/home | sed -n "s/^nightly-tree\.//p")"
 fi
 
 # The guest has no wget yet, so the sources come from the host, fetched with

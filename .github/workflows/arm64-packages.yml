@@ -1,0 +1,72 @@
+name: arm64 packages
+# Rebuilds the arm64 packages whose recipes changed on bootstrap/arm64, in the
+# Haiku guest on the self-hosted runner, and publishes the package repository
+# to the arm64-packages release. See renkuos/bootstrap/arm64/README.md.
+#
+# The runner runs code from this repository on our own machine, so this
+# workflow has no pull_request or push trigger. Only the schedule and a
+# maintainer's manual run can reach it.
+'on':
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      ports:
+        description: 'Ports to build, separated by spaces (empty: what changed)'
+        required: false
+        default: ''
+permissions:
+  contents: write
+concurrency:
+  group: arm64-packages
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'RenkuOS/RenkuOSPorts'
+    runs-on: [self-hosted, renkuos-arm64]
+    # A gcc update rebuilds much of the set, about 2.5 days on this runner.
+    # Self-hosted jobs may run for up to 5 days.
+    timeout-minutes: 7200
+    outputs:
+      built: '${{ steps.build.outputs.built }}'
+    env:
+      BUILD_ROOT: /home/kevin/haiku-build
+      PORTS_TREE: /home/kevin/haiku-build/RenkuOSPorts
+      HAIKUPORTER: /home/kevin/haiku-build/haikuporter/haikuporter.py
+      LICENSES: /home/kevin/haiku-build/haiku-licenses
+    steps:
+      - uses: actions/checkout@v7
+      - name: 'Build changed ports'
+        id: build
+        env:
+          PORTS: '${{ inputs.ports }}'
+        run: |
+          export MAKEFILE_ENGINE=$(ls $BUILD_ROOT/inputs/makefile_engine-*-any.hpkg)
+          renkuos/bootstrap/arm64/update-packages.sh $PORTS
+  # A job of its own, because the job token expires after 24 hours and a long
+  # build would outlive it.
+  publish:
+    needs: build
+    if: always() && needs.build.outputs.built == 'yes'
+    runs-on: [self-hosted, renkuos-arm64]
+    env:
+      BUILD_ROOT: /home/kevin/haiku-build
+      PORTS_TREE: /home/kevin/haiku-build/RenkuOSPorts
+      GH_TOKEN: '${{ github.token }}'
+      PACKAGE_REPO: /home/kevin/haiku-build/inputs/tools/package_repo
+      LD_LIBRARY_PATH: /home/kevin/haiku-build/inputs/tools/lib
+      # Where the unpacked repository will be served. Not decided yet.
+      REPO_BASEURL: https://renkuos.freemyip.com/repo/renkuosports/arm64
+    steps:
+      - uses: actions/checkout@v7
+      - name: 'Publish the package repository'
+        run: |
+          out=$BUILD_ROOT/publish-out
+          renkuos/bootstrap/arm64/publish-repo.sh $out
+          gh release view arm64-packages > /dev/null 2>&1 ||
+            gh release create arm64-packages --prerelease --title 'arm64 packages' \
+              --notes 'Rolling release of the arm64 package repository.'
+          gh release upload arm64-packages --clobber $out/*.tar $out/*.sha256
+          gh release edit arm64-packages --notes "Rolling release of the arm64 package repository.
+          Built from bootstrap/arm64 at $(git -C $PORTS_TREE rev-parse --short HEAD) on $(date -u +%F)."
+          rm -f $BUILD_ROOT/unpublished
