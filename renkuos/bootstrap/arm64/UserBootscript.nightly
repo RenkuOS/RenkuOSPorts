@@ -1,0 +1,100 @@
+#!/bin/sh
+# After Phase 1, in the same image: build the ports the first arm64 nightly needs
+# (nightly-ports.txt, from phase2/resolve.py with the cut list) from the
+# RenkuOSPorts tree. Markers go to serial, logs to files. The "PHASE1" prefix is
+# what phase1b-run.sh and monitor.sh look for.
+mark() { echo "PHASE1 $*" > /dev/dprintf; echo "PHASE1 $*" >> /boot/home/nightly.log; }
+# The arm64 kernel has no RTC driver yet and boots at time 0.
+date -s @HOST_EPOCH > /dev/null
+mark "hello $(date +%s)"
+[ -e /boot/home/nightly.done ] && { mark "already done"; mark "end $(date +%s)"; exit 0; }
+cd /boot/home/haikuports || exit 1
+
+# Show progress on serial every 10 minutes, and after an hour without log output
+# kill any conftest still running (tar's re_compile_pattern check hangs on arm64).
+(lastsize=; quiet=0
+while sleep 600; do
+	l=$(ls -t /boot/home/nightly-*.log 2> /dev/null | head -1)
+	mark "hb $(date +%s) $(ls packages 2> /dev/null | wc -l | tr -d " ") pkgs, ${l##*/}: $(tail -1 "$l" 2> /dev/null | cut -c1-100)"
+	size=$(wc -c < "$l" 2> /dev/null)
+	[ "$size" = "$lastsize" ] && quiet=$((quiet + 1)) || { quiet=0; lastsize=$size; }
+	if [ $quiet -ge 6 ]; then
+		for t in $(ps | awk '$1 ~ /conftest/ { print $2 }'); do
+			mark "watchdog: killing $(ps | awk -v t=$t '$2 == t { print $1 }') (team $t)"
+			kill -9 $t
+		done
+		quiet=0
+	fi
+done) &
+
+HP=$(command -v haikuporter) || { mark "no haikuporter"; mark "end $(date +%s)"; exit 1; }
+# Phase 1 replaced the bootstrap Python with the full one.
+PY=/boot/system/bin/python3.10
+$PY -c 'import zlib, lzma, bz2, ssl' 2> /dev/null ||
+	{ mark "no full python"; mark "end $(date +%s)"; exit 1; }
+build() {
+	log=/boot/home/nightly-$1.log; shift
+	t0=$(date +%s)
+	mark "begin $(basename $log .log) $t0"
+	"$@" >> $log 2>&1
+	r=$?
+	mark "exit $r seconds $(( $(date +%s) - t0 ))"
+	grep -a -E "^Error|grabbing" $log | tail -12 | while read -r line; do mark "  $line"; done
+	tail -2 $log | while read -r line; do mark "  $line"; done
+	sync
+}
+
+# renkuosports.tar holds the whole RenkuOSPorts tree the first time. After that it
+# holds only the files changed since the commit in nightly-tree.<commit>, and
+# renkuosports.removed lists the files to delete. Extracting with -m makes the
+# changed recipes newer than their dependency infos, so HaikuPorter parses only
+# those again.
+if [ -e /boot/home/renkuosports.tar ]; then
+	if [ -e /boot/home/renkuosports.removed ]; then
+		while read -r f; do rm -f "$f"; done < /boot/home/renkuosports.removed
+	else
+		# Swap the Phase 1 recipes for the tree. The rigged recipes in
+		# input-source-packages would shadow the tree's, and HaikuPorter would
+		# reuse recipes it cached from them, so move both out of the way.
+		mkdir -p /boot/home/phase1-tree
+		[ -d input-source-packages ] && mv input-source-packages /boot/home/phase1-tree/
+		rm -rf repository/recipeCache
+	fi
+	tar -xmf /boot/home/renkuosports.tar || { mark "tree: tar failed"; mark "end $(date +%s)"; exit 1; }
+	rm -f /boot/home/renkuosports.tar /boot/home/renkuosports.removed /boot/home/nightly-tree.[0-9a-f]*
+	mv /boot/home/nightly-tree.next /boot/home/nightly-tree.$(cat /boot/home/nightly-tree.next)
+	sync
+	mark "tree: $(ls -d */*/ | wc -l | tr -d " ") port directories, at $(ls /boot/home | sed -n "s/^nightly-tree\.//p")"
+fi
+
+# The guest has no wget yet, so the sources come from the host, fetched with
+# fetch-recipe.sh.
+if [ -e /boot/home/nightly-downloads.tar ]; then
+	tar -xmf /boot/home/nightly-downloads.tar && rm /boot/home/nightly-downloads.tar
+	sync
+	mark "downloads: $(ls */*/download | wc -l | tr -d " ") files"
+fi
+
+# Each port gets two tries. The marker holds the exit status of each, so a
+# reboot resumes where the last boot stopped.
+mkdir -p /boot/home/nightly
+for try in 1 2; do
+	for port in $(cat /boot/home/nightly-ports.txt); do
+		m=/boot/home/nightly/$port
+		[ "$(tail -1 $m 2> /dev/null)" = 0 ] && continue
+		[ $(cat $m 2> /dev/null | wc -l) -ge $try ] && continue
+		# A stop right after a build can lose the marker but not the package.
+		ls packages/$port-[0-9]*.hpkg > /dev/null 2>&1 && { echo 0 >> $m; continue; }
+		# A failed build leaves its work directory, and HaikuPorter would reuse
+		# it without unpacking or patching again. Successful builds remove theirs.
+		rm -rf */*/work-*
+		build $port $PY $HP -y -jJOBS --no-package-obsoletion --no-source-packages \
+			--no-git-repo --missing-dependencies $port
+		echo $r >> $m
+	done
+done
+mark "failed: $(for m in /boot/home/nightly/*; do [ "$(tail -1 $m)" = 0 ] || basename $m; done | tr "\n" " ")"
+mark "packages: $(ls packages | wc -l | tr -d " ")"
+touch /boot/home/nightly.done
+sync
+mark "end $(date +%s)"
