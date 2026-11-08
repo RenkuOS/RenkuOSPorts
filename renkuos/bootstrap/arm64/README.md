@@ -17,6 +17,7 @@ planning notes.
 | `run-nightly.sh` | build host | Runs the whole nightly: prepares the image and runs `phase1b-run.sh`, in two passes when flex or mkdepend is still missing. |
 | `update-packages.sh` | runner | Rebuilds the ports whose recipes changed since the last successful run. See "The package runner" below. |
 | `publish-repo.sh` | runner | Builds the package repository and packs it, and the debug info, for the `arm64-packages` release. |
+| `fetch-repo.sh` | web server | Unpacks the newest repository from the release where the web server serves it. |
 | `bfsq.sh` | build host | Runs `fs_shell` commands against the image's BFS partition while QEMU is off. |
 | `fetch-recipe.sh` | build host | Downloads a recipe's sources into `download/` with the `.uri` files HaikuPorter expects. The guest has no curl or wget. |
 | `temp-guard.sh` | build host | Logs the CPU temperature every minute to `logs/cputemp.log`. It pauses the guest at 85°C and resumes it below 70°C. |
@@ -165,6 +166,12 @@ upload succeeds, so a failed upload is tried again the next night.
   need.
 
 A release file can hold at most 2 GiB, and each archive is about 0.7 GB today.
+
+The web server that serves the repository runs `fetch-repo.sh <served-dir>` from cron,
+some time after the nightly run. It does nothing until the release has a new archive.
+Then it checks the archive against its `.sha256`, and `repo` against `repo.sha256`,
+unpacks it into `<served-dir>.d/<checksum>`, and points the `<served-dir>` symlink at it
+in one step. It keeps the previous copy for clients that are still downloading.
 
 ### Setting up the runner
 
