@@ -44,8 +44,10 @@ rm -rf $W; mkdir -p $W
 # too old for doxygen, and the bootstrap bison's --version fails, so the real
 # ones replace them once they are built: bison in Phase 1, and flex in the first
 # nightly pass (see run-nightly.sh). mkdepend is what makefile_engine needs.
+# HaikuPorter also writes the version of a system package into a port's plain
+# requires, so gcc built beside the bootstrap binutils requires cmd:as 2.41.
 real=
-for p in flex bison mkdepend; do
+for p in flex bison binutils mkdepend; do
 	[ -n "$(newest $p)" ] && real="$real $p"
 done
 
