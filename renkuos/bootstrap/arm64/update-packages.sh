@@ -15,6 +15,8 @@
 #                HaikuPorter checks recipes against
 #   PORTS_LIST   the nightly port list (default $BUILD_ROOT/phase2/nightly-ports.txt)
 #   RECIPES_LIST the nightly recipe list (default .../phase2/nightly-recipes.txt)
+#   SOURCE_PORTS ports to make source packages of (default: zlib zstd, which an
+#                arm64 Haiku build unpacks for its zlib and zstd build features)
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 R=${BUILD_ROOT:-$HOME/haiku-build}
@@ -22,6 +24,7 @@ OUT=$R/phase1-packages/bootstrap
 TREE=${PORTS_TREE:?set PORTS_TREE to the RenkuOSPorts checkout}
 PORTS_LIST=${PORTS_LIST:-$R/phase2/nightly-ports.txt}
 RECIPES_LIST=${RECIPES_LIST:-$R/phase2/nightly-recipes.txt}
+SOURCE_PORTS=${SOURCE_PORTS-zlib zstd}
 W=$R/update
 mkdir -p $W
 
@@ -31,6 +34,15 @@ old=$(cat $R/processed_rev 2> /dev/null) ||
 	{ echo "no $R/processed_rev: write the commit the packages were built from"; exit 1; }
 git -C "$TREE" checkout -q --detach $new
 
+# A source port gets a new source package when it is rebuilt or has none yet.
+sources() {
+	for p in $SOURCE_PORTS; do
+		if grep -q -x -F $p $W/ports || ! ls $OUT/${p}_source-[0-9]*-source.hpkg > /dev/null 2>&1; then
+			echo $p
+		fi
+	done > $W/sources
+}
+
 # Tell a GitHub workflow to publish. $R/unpublished stays until a publish
 # succeeds, so packages that built in a run whose upload failed go out later.
 built() { touch $R/unpublished; [ -z "$GITHUB_OUTPUT" ] || echo "built=yes" >> "$GITHUB_OUTPUT"; }
@@ -38,6 +50,7 @@ built() { touch $R/unpublished; [ -z "$GITHUB_OUTPUT" ] || echo "built=yes" >> "
 
 if [ $# -gt 0 ]; then
 	printf '%s\n' "$@" > $W/ports
+	sources
 else
 	[ $old = $new ] && { echo "no new commits on bootstrap/arm64"; exit 0; }
 	# No ALLOW_UNTESTED, as in the guest: an untested newer recipe, such as gcc 15,
@@ -62,19 +75,21 @@ EOF
 	ls $OUT | sed -E 's/-[^-]+-[^-]+-[^-]+\.hpkg$//' | sort -u | cat - "$PORTS_LIST" |
 		sort -u | comm -12 - $W/changed > $W/ports
 	echo "changed ports: $(wc -l < $W/changed), ours: $(wc -l < $W/ports)"
-	if [ ! -s $W/ports ]; then
+	sources
+	if [ ! -s $W/ports ] && [ ! -s $W/sources ]; then
 		echo $new > $R/processed_rev
 		exit 0
 	fi
 fi
 echo "building: $(tr '\n' ' ' < $W/ports)"
+[ ! -s $W/sources ] || echo "source packages: $(tr '\n' ' ' < $W/sources)"
 
 # The guest cannot download, so fetch the sources of every recipe of these
 # ports, including one that a version bump has just added.
 git -C "$TREE" ls-files '*.recipe' | awk -F/ 'NR == FNR { p[$1]; next }
-	{ n = $NF; sub(/-[^-]*\.recipe$/, "", n) } n in p' $W/ports - |
+	{ n = $NF; sub(/-[^-]*\.recipe$/, "", n) } n in p' <(cat $W/ports $W/sources) - |
 	cat - "$RECIPES_LIST" | sort -u > $W/recipes
-PORTS_REF=$new REBUILD=1 $HERE/prepare-nightly.sh $W/ports $W/recipes
+PORTS_REF=$new REBUILD=1 SOURCES_LIST=$W/sources $HERE/prepare-nightly.sh $W/ports $W/recipes
 $HERE/phase1b-run.sh
 ended=$(grep "^boot " $R/phase1b.status | tail -1 | cut -d" " -f3)
 [ "$ended" = end ] || { echo "the guest did not finish: $ended"; exit 1; }
@@ -87,7 +102,8 @@ line=$(grep -a "PHASE1 failed:" $serial | tail -1 | tr -d '\r')
 # Publish what built, even if some ports failed.
 built
 # Count only the ports this run built.
-failed=$(echo "${line#*failed:}" | tr ' ' '\n' | grep -x -F -f $W/ports | tr '\n' ' ')
+failed=$(echo "${line#*failed:}" | tr ' ' '\n' |
+	grep -x -F -f <(cat $W/ports; sed 's/$/_source/' $W/sources) | tr '\n' ' ')
 if [ -n "$failed" ]; then
 	echo "failed: $failed"
 	exit 1

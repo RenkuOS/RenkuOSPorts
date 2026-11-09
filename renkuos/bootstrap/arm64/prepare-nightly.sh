@@ -14,6 +14,7 @@
 # ANY_PACKAGES is a directory of *-any.hpkg files, such as the download
 # directory of an x86_64 build, for the packages the regular haiku requires that
 # no arm64 build makes.
+# SOURCES_LIST, if set, is a file of ports to make source packages of.
 # REBUILD=1 builds every port in the list again, for a changed recipe: it
 # clears the port's marker and moves its main package out of HaikuPorter's
 # packages directory. Bump the recipe's REVISION, because the host keeps the
@@ -93,6 +94,7 @@ fi
 (cd "$TREE" && xargs -a "$recipes" $HERE/fetch-recipe.sh)
 (cd "$TREE" && tar -cf $W/nightly-downloads.tar $(for r in $(cat "$recipes"); do
 	d=$(dirname $r)/download; [ -d $d ] && echo $d; done))
+if [ -n "$SOURCES_LIST" ]; then cp "$SOURCES_LIST" $W/nightly-sources.txt; else : > $W/nightly-sources.txt; fi
 printf 'default_action kill\n' > $W/debug_server.settings
 : > $W/locale.settings
 
@@ -160,12 +162,16 @@ if [ -n "$REBUILD" ]; then
 		done
 	done
 fi
+for p in $(cat $W/nightly-sources.txt); do
+	cmds+=("rm $H/nightly/${p}_source")
+done
 cmds+=("mkdir $H/config/settings/system/debug_server"
 	"rm $H/config/settings/system/debug_server/settings"
 	"cp :$W/debug_server.settings $H/config/settings/system/debug_server/settings"
 	"rm $H/renkuosports.tar" "cp :$W/renkuosports.tar $H/renkuosports.tar"
 	"rm $H/renkuosports.removed" "rm $H/nightly-tree.next" "cp :$W/nightly-tree.next $H/nightly-tree.next"
 	"rm $H/nightly-ports.txt" "cp :$ports $H/nightly-ports.txt"
+	"rm $H/nightly-sources.txt" "cp :$W/nightly-sources.txt $H/nightly-sources.txt"
 	"rm $H/nightly-downloads.tar" "cp :$W/nightly-downloads.tar $H/nightly-downloads.tar"
 	"rm $H/nightly.tree" "rm $H/nightly.done")
 [ -f $W/renkuosports.removed ] &&
@@ -190,7 +196,7 @@ done
 for p in $real; do
 	grep -a -q "${p}_bootstrap-" $BFSQ_OUT && { echo "${p}_bootstrap is still installed"; bad=1; }
 done
-for f in renkuosports.tar nightly-tree.next ${base:+renkuosports.removed} nightly-ports.txt \
+for f in renkuosports.tar nightly-tree.next ${base:+renkuosports.removed} nightly-ports.txt nightly-sources.txt \
 		nightly-downloads.tar settings ${haiku:+"Locale settings"}; do
 	grep -a -q " $f$" $BFSQ_OUT || { echo "missing in image: $f"; bad=1; }
 done

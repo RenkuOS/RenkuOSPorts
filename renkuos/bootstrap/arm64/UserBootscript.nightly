@@ -92,6 +92,16 @@ for try in 1 2; do
 			--no-git-repo --missing-dependencies $port
 		echo $r >> $m
 	done
+	# Source packages for the ports in nightly-sources.txt, which the OS build
+	# unpacks. These only pack the sources and patches, and build nothing.
+	for port in $(cat /boot/home/nightly-sources.txt 2> /dev/null); do
+		m=/boot/home/nightly/${port}_source
+		[ "$(tail -1 $m 2> /dev/null)" = 0 ] && continue
+		[ $(cat $m 2> /dev/null | wc -l) -ge $try ] && continue
+		build ${port}_source $PY $HP -y --no-package-obsoletion --create-source-packages \
+			--no-git-repo $port
+		echo $r >> $m
+	done
 done
 mark "failed: $(for m in /boot/home/nightly/*; do [ "$(tail -1 $m)" = 0 ] || basename $m; done | tr "\n" " ")"
 mark "packages: $(ls packages | wc -l | tr -d " ")"
