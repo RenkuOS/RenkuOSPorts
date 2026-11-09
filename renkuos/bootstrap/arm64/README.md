@@ -151,6 +151,12 @@ code on our own machine.
 4. It moves `processed_rev` to the new head only when every port built, so a failed port
    is tried again the next night.
 
+It also makes source packages of the ports in `SOURCE_PORTS` (zlib and zstd), because an
+arm64 Haiku build unpacks `zlib_source` and `zstd_source` for its build features. A source
+port gets a new one when it is rebuilt or has none yet. The guest only packs the sources
+and patches for these, with HaikuPorter's `--create-source-packages`. `package_repo` leaves
+source packages out of the repository index, but they are still in `packages/`.
+
 Bump a recipe's `REVISION` when changing it. The host keeps the first copy of each package
 file name, so a rebuild under the same name would not replace it.
 
