@@ -55,3 +55,198 @@ index ea65227..0df07ef 100644
 -- 
 2.52.0
 
+
+From 3592d4751f15f1a102ab5de4658ed725169a60e2 Mon Sep 17 00:00:00 2001
+From: Ian <idumych@gmail.com>
+Date: Tue, 10 Nov 2026 15:38:47 -0800
+Subject: Translucent windows on a composited Renku desktop
+
+Qt::WA_TranslucentBackground now works where the desktop is composited:
+the window gets Renku's B_TRANSPARENT_WINDOW flag and a clear view
+color, and the backing store keeps an alpha channel (B_RGBA32 and
+Format_ARGB32, both not premultiplied), cleared before each paint.
+
+is_composited_desktop() is looked up at run time, so the plugin still
+runs on systems without it; there, windows stay opaque as before.
+
+Assisted-by: claude-opus-5-5
+---
+ src/platform/qhaikubackingstore.cpp | 39 ++++++++++++++++++++++++-----
+ src/platform/qhaikubackingstore.h   |  4 +++
+ src/platform/qhaikuwindow.cpp       | 37 +++++++++++++++++++++++++++
+ src/platform/qhaikuwindow.h         |  5 ++++
+ 4 files changed, 79 insertions(+), 6 deletions(-)
+
+diff --git a/src/platform/qhaikubackingstore.cpp b/src/platform/qhaikubackingstore.cpp
+index 6f2052f..b4f6c89 100644
+--- a/src/platform/qhaikubackingstore.cpp
++++ b/src/platform/qhaikubackingstore.cpp
+@@ -55,10 +55,25 @@ QT_BEGIN_NAMESPACE
+ 
+ QHaikuBackingStore::QHaikuBackingStore(QWindow *window)
+     : QPlatformBackingStore(window)
++    , m_bitmap(NULL)
+ {
+-	BRect rect(0, 0, window->width() - 1, window->height() - 1);
+-	m_bitmap = new BBitmap(rect, B_RGB32);	
+-	m_image = QImage((uchar*)m_bitmap->Bits(), window->width(), window->height(), m_bitmap->BytesPerRow(), QImage::Format_RGB32);
++	// A translucent window keeps its alpha channel. Haiku's B_RGBA32 isn't
++	// premultiplied, and neither is Format_ARGB32.
++	m_translucent = window->requestedFormat().hasAlpha()
++		&& QHaikuWindow::transparencyAvailable();
++	createImage(window->size(), false);
++}
++
++
++void QHaikuBackingStore::createImage(const QSize &size, bool clear)
++{
++	BRect rect(0, 0, size.width() - 1, size.height() - 1);
++	m_bitmap = new BBitmap(rect, m_translucent ? B_RGBA32 : B_RGB32, clear);
++	m_image = QImage((uchar*)m_bitmap->Bits(), size.width(), size.height(),
++		m_bitmap->BytesPerRow(),
++		m_translucent ? QImage::Format_ARGB32 : QImage::Format_RGB32);
++	if (m_translucent)
++		m_image.fill(Qt::transparent);
+ }
+ 
+ 
+@@ -75,6 +90,20 @@ QPaintDevice *QHaikuBackingStore::paintDevice()
+ }
+ 
+ 
++void QHaikuBackingStore::beginPaint(const QRegion &region)
++{
++	// What is painted again starts out clear, or it would be painted over
++	// what was there before.
++	if (!m_translucent)
++		return;
++
++	QPainter painter(&m_image);
++	painter.setCompositionMode(QPainter::CompositionMode_Source);
++	for (const QRect &rect : region)
++		painter.fillRect(rect, Qt::transparent);
++}
++
++
+ void QHaikuBackingStore::drawChildWindows(QWindow *topwin)
+ {
+ 	QHaikuWindow *topHaikuWin = QHaikuWindow::windowForWinId(topwin->winId());
+@@ -139,9 +168,7 @@ void QHaikuBackingStore::resize(const QSize &size, const QRegion &)
+     		m_image = QImage();
+ 	        delete m_bitmap;
+ 
+-			BRect rect(0, 0, size.width() - 1, size.height() - 1);
+-			m_bitmap = new BBitmap(rect, B_RGB32, true);
+-			m_image = QImage((uchar*)m_bitmap->Bits(), size.width(), size.height(), m_bitmap->BytesPerRow(), QImage::Format_RGB32);
++			createImage(size, true);
+ 			view->UnlockLooper();
+     	}
+     }
+diff --git a/src/platform/qhaikubackingstore.h b/src/platform/qhaikubackingstore.h
+index c66b435..6ed4207 100644
+--- a/src/platform/qhaikubackingstore.h
++++ b/src/platform/qhaikubackingstore.h
+@@ -77,6 +77,7 @@ public:
+     ~QHaikuBackingStore();
+ 
+     QPaintDevice *paintDevice() override;
++    void beginPaint(const QRegion &region) override;
+     void flush(QWindow *window, const QRegion &region, const QPoint &offset) override;
+     void resize(const QSize &size, const QRegion &staticContents) override;
+     bool scroll(const QRegion &area, int dx, int dy) override;
+@@ -87,8 +88,11 @@ public:
+ private:
+     void clearHash();
+ 
++    void createImage(const QSize &size, bool clear);
++
+     QImage m_image;
+     BBitmap *m_bitmap;
++    bool m_translucent;
+     
+     QHash<WId, QRect> m_windowAreaHash;
+ };
+diff --git a/src/platform/qhaikuwindow.cpp b/src/platform/qhaikuwindow.cpp
+index 9eda27b..c10d1d6 100644
+--- a/src/platform/qhaikuwindow.cpp
++++ b/src/platform/qhaikuwindow.cpp
+@@ -62,6 +62,13 @@
+ 
+ #include <qdebug.h>
+ 
++#include <dlfcn.h>
++
++// B_TRANSPARENT_WINDOW in Renku's Window.h. Older Renku releases and Haiku
++// have neither the flag nor is_composited_desktop(), so the function is
++// looked up at run time, and the flag is only used when it is found.
++static const uint32 kTransparentWindowFlag = 0x01000000;
++
+ QT_BEGIN_NAMESPACE
+ 
+ static uint32 translateKeyCode(uint32 key)
+@@ -384,6 +391,25 @@ void QHaikuWindow::destroy()
+ }
+ 
+ 
++bool QHaikuWindow::transparencyAvailable()
++{
++	static int available = -1;
++	if (available < 0) {
++		typedef bool (*composited_function)();
++		composited_function composited = (composited_function)dlsym(
++			RTLD_DEFAULT, "_Z21is_composited_desktopv");
++		available = composited != NULL && composited() ? 1 : 0;
++	}
++	return available == 1;
++}
++
++
++bool QHaikuWindow::isTranslucent() const
++{
++	return window()->requestedFormat().hasAlpha() && transparencyAvailable();
++}
++
++
+ void QHaikuWindow::setWindowFlags(Qt::WindowFlags flags)
+ {
+ 	windowFlags = flags;
+@@ -478,9 +504,20 @@ void QHaikuWindow::setWindowFlags(Qt::WindowFlags flags)
+ 			wfeel = B_MODAL_APP_WINDOW_FEEL;
+ 		}
+ 	}
++	// Qt::WA_TranslucentBackground: what Qt leaves clear shows what is behind.
++	bool translucent = isTranslucent();
++	if (translucent)
++		wflag |= kTransparentWindowFlag;
++
+ 	m_window->SetLook(wlook);
+ 	m_window->SetFeel(wfeel);
+ 	m_window->SetFlags(wflag);
++
++	if (m_window->Lock()) {
++		m_window->View()->SetViewColor(translucent
++			? B_TRANSPARENT_COLOR : ui_color(B_PANEL_BACKGROUND_COLOR));
++		m_window->Unlock();
++	}
+ }
+ 
+ 
+diff --git a/src/platform/qhaikuwindow.h b/src/platform/qhaikuwindow.h
+index 0744ff9..1c388f9 100644
+--- a/src/platform/qhaikuwindow.h
++++ b/src/platform/qhaikuwindow.h
+@@ -148,6 +148,11 @@ public:
+ 
+ 	QHaikuWindow *topLevelWindow() { return m_topLevel; }
+ 
++	// Whether windows that ask for an alpha channel can have one: only on
++	// Renku with a composited desktop.
++	static bool transparencyAvailable();
++	bool isTranslucent() const;
++
+ 	static QHaikuWindow *windowForWinId(WId id);
+ 	static QHaikuSurfaceView *viewForWinId(WId id);
+ 	static void syncDeskBarVisible(void);
+-- 
+2.56.0
+
