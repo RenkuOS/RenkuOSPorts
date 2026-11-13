@@ -99,9 +99,10 @@ for try in 1 2; do
 		[ "$(tail -1 $m 2> /dev/null)" = 0 ] && continue
 		[ $(cat $m 2> /dev/null | wc -l) -ge $try ] && continue
 		# HaikuPorter lists the source package only when it parses the recipe
-		# with --create-source-packages. Remove the port's marker so it writes
-		# the dependency infos again, this time with the source package.
-		rm -f repository/$port-[0-9]*.DependencyInfoMarker
+		# with --create-source-packages. It parses a recipe again only when the
+		# recipe is newer than the port's main dependency info (the guest's
+		# HaikuPorter) or its marker (newer HaikuPorter), so remove both.
+		rm -f repository/$port-[0-9]*.DependencyInfo repository/$port-[0-9]*.DependencyInfoMarker
 		build ${port}_source $PY $HP -y --no-package-obsoletion --create-source-packages \
 			--no-git-repo $port
 		echo $r >> $m
