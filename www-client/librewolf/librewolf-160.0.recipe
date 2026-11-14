@@ -1,35 +1,30 @@
-SUMMARY="A fast, private and open-source web browser"
-DESCRIPTION="Firefox is a free and open-source web browser developed by the \
-Mozilla Foundation. It is a flagship open-web client built with a strong focus \
-on privacy, performance, and standards compliance.
+SUMMARY="A custom version of Firefox, focused on privacy, security and freedom"
+DESCRIPTION="This project is a custom and independent version of Firefox, with \
+the primary goals of privacy, security and user freedom.
 
-Firefox utilizes the Gecko layout engine and SpiderMonkey JavaScript engine to \
-render the web accurately and securely.
-
-Key features:
-* Built-in Enhanced Tracking Protection for privacy-focused browsing
-* Full support for modern web standards, including HTML5, CSS3, and WebAssembly
-* Rich ecosystem of WebExtensions and customizable themes
-* Flexible user profile management and tabbed browsing interface
-* Built from official upstream source code with Haiku-specific patches"
-HOMEPAGE="https://www.firefox.com/"
+LibreWolf is designed to increase protection against tracking and fingerprinting \
+techniques, while also including a few security improvements. This is achieved \
+through our privacy and security oriented settings and patches. LibreWolf also \
+aims to remove all the telemetry, data collection and annoyances, as well as \
+disabling anti-freedom features like DRM."
+HOMEPAGE="https://librewolf.net/"
 COPYRIGHT="1995-2026 Mozilla Developers and Contributors"
 LICENSE="MPL v2.0"
 REVISION="1"
-SOURCE_URI="https://ftp.mozilla.org/pub/firefox/releases/${portVersion}/source/firefox-${portVersion}.source.tar.xz"
-CHECKSUM_SHA256="b5fe407199685f8bddf3b2c81feb8b805429e6f3d307c9430f53456f85b6e063"
-SOURCE_DIR="firefox-$portVersion"
+SOURCE_URI="https://librewolf.dev/api/packages/librewolf/generic/librewolf-source/${portVersion}-1/librewolf-${portVersion}-1.source.tar.gz"
+CHECKSUM_SHA256="a2901ce211dce6c250cbe04a1324f239f9bb99d87b288cfa8e09da206e684e38"
+SOURCE_DIR="librewolf-${portVersion}-1"
 PATCHES="
-	firefox-$portVersion.patchset
-	firefox_launcher-$portVersion.patchset
+	librewolf-$portVersion.patchset
+	librewolf_launcher-$portVersion.patchset
 	"
 
 # UI backend: "NATIVE" (cairo-haiku) or "GTK" (cairo-gtk3-wayland-only)
 UI_BACKEND="NATIVE"
 
 ADDITIONAL_FILES="
-	firefox.rdef.in
-	firefox_launcher.rdef.in
+	librewolf.rdef.in
+	librewolf_launcher.rdef.in
 	gfxtest.rdef.in
 	mozconfig_gtk
 	mozconfig_native
@@ -38,12 +33,15 @@ ADDITIONAL_FILES="
 ARCHITECTURES="x86_64"
 
 PROVIDES="
-	firefox = $portVersion
-	app:Firefox = $portVersion
-	cmd:firefox = $portVersion
+	librewolf = $portVersion
+	app:LibreWolf = $portVersion
+	cmd:librewolf = $portVersion
 	"
 CONFLICTS="
-	firefox_exp
+	librewolf_bin
+	"
+REPLACES="
+	librewolf_bin
 	"
 REQUIRES="
 	haiku
@@ -179,7 +177,7 @@ BUILD()
 	./mach build -j4
 
 	cd tools/haiku-launcher
-	g++ -O2 -o "Firefox Browser" launcher.cpp -lbe
+	g++ -O2 -o "LibreWolf Browser" launcher.cpp -lbe
 }
 
 INSTALL()
@@ -196,14 +194,15 @@ INSTALL()
 
 	mkdir -p $appsDir $binDir
 
-	mv /usr/local/lib/Firefox $appsDir/Firefox
-	cp "tools/haiku-launcher/Firefox Browser" $appsDir/Firefox
-	ln -s "$appsDir/Firefox/Firefox" $binDir/firefox
+	mv /usr/local/lib/librewolf $appsDir/LibreWolf
+	mv $appsDir/LibreWolf/librewolf $appsDir/LibreWolf/LibreWolf
+	ln -s "$appsDir/LibreWolf/LibreWolf" $binDir/librewolf
+	cp "tools/haiku-launcher/LibreWolf Browser" $appsDir/LibreWolf
 
 	# arranging the files in lib directory
-	mkdir -p $appsDir/Firefox/lib
+	mkdir -p $appsDir/LibreWolf/lib
 
-	pushd $appsDir/Firefox
+	pushd $appsDir/LibreWolf
 	mv -f \
 		libgkcodecs.so       \
 		liblgpllibs.so       \
@@ -222,10 +221,10 @@ INSTALL()
 	fi
 	popd
 
-	local APP_SIGNATURE="application/x-vnd.Mozilla-Firefox"
+	local APP_SIGNATURE="application/x-vnd.librewolf"
 	local MAJOR="`echo "$portVersion" | cut -d. -f1`"
 	local MIDDLE="`echo "$portVersion" | cut -d. -f2`"
-	local MINOR="`echo "$portVersion" | cut -d. -f3`"
+	local MINOR="0"
 	local LONG_INFO="$SUMMARY"
 
 	sed \
@@ -234,26 +233,26 @@ INSTALL()
 		-e "s|@MIDDLE@|$MIDDLE|" \
 		-e "s|@MINOR@|$MINOR|" \
 		-e "s|@LONG_INFO@|$LONG_INFO|" \
-		$portDir/additional-files/firefox.rdef.in > firefox.rdef
+		$portDir/additional-files/librewolf.rdef.in > librewolf.rdef
 
 	sed \
 		-e "s|@MAJOR@|$MAJOR|" \
 		-e "s|@MIDDLE@|$MIDDLE|" \
 		-e "s|@MINOR@|$MINOR|" \
 		-e "s|@LONG_INFO@|$LONG_INFO|" \
-		$portDir/additional-files/firefox_launcher.rdef.in > firefox_launcher.rdef
+		$portDir/additional-files/librewolf_launcher.rdef.in > librewolf_launcher.rdef
 
-	addResourcesToBinaries firefox.rdef "$appsDir/Firefox/Firefox"
-	addResourcesToBinaries firefox_launcher.rdef "$appsDir/Firefox/Firefox Browser"
+	addResourcesToBinaries librewolf.rdef "$appsDir/LibreWolf/LibreWolf"
+	addResourcesToBinaries librewolf_launcher.rdef "$appsDir/LibreWolf/LibreWolf Browser"
 
-	if [ "$UI_BACKEND" = "GTK" ] && [ -f "$appsDir/Firefox/gfxtest" ]; then
+	if [ "$UI_BACKEND" = "GTK" ] && [ -f "$appsDir/LibreWolf/gfxtest" ]; then
 		sed \
 			-e "s|@MAJOR@|$MAJOR|" \
 			-e "s|@MIDDLE@|$MIDDLE|" \
 			-e "s|@MINOR@|$MINOR|" \
 			$portDir/additional-files/gfxtest.rdef.in > gfxtest.rdef
-		addResourcesToBinaries gfxtest.rdef "$appsDir/Firefox/gfxtest"
+		addResourcesToBinaries gfxtest.rdef "$appsDir/LibreWolf/gfxtest"
 	fi
 
-	addAppDeskbarSymlink $appsDir/Firefox/Firefox
+	addAppDeskbarSymlink $appsDir/LibreWolf/LibreWolf
 }

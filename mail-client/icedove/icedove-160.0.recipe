@@ -1,46 +1,49 @@
-SUMMARY="Unofficial Haiku port of Mozilla Firefox"
-DESCRIPTION="Iceweasel is an open source web browser. \
-It achieves balance between ease of use and customization, catering to the \
-needs of both casual and power users."
-HOMEPAGE="https://github.com/kenz-gelsoft/gecko-dev"
-COPYRIGHT="1995-2026 Mozilla Developers and Contributors"
+SUMMARY="A secure, customizable email & news client, forked from Thunderbird"
+DESCRIPTION="A secure and customizable email, news, and personal information manager \
+forked from Thunderbird. Experience cross-platform, decentralized communication built \
+on open standards, putting you in control of your data and workflow. This extensible \
+platform offers interoperable messaging, contacts, and appointment management."
+HOMEPAGE="https://directory.fsf.org/wiki/Icedove/"
+COPYRIGHT="1998–2026 MZLA Technologies Corporation,"
 LICENSE="MPL v2.0"
 REVISION="1"
-SOURCE_URI="https://ftp.mozilla.org/pub/firefox/releases/${portVersion}/source/firefox-${portVersion}.source.tar.xz"
-CHECKSUM_SHA256="b5fe407199685f8bddf3b2c81feb8b805429e6f3d307c9430f53456f85b6e063"
-SOURCE_DIR="firefox-$portVersion"
+SOURCE_URI="https://ftp.mozilla.org/pub/thunderbird/releases/$portVersion/source/thunderbird-$portVersion.source.tar.xz"
+CHECKSUM_SHA256="0eee5fd3ad212b19d355498dc490d8c672f0dcd3697e242ed9b2fa9519efa4d3"
+SOURCE_DIR="thunderbird-$portVersion"
 PATCHES="
-	iceweasel-$portVersion.patchset
-	iceweasel_launcher-$portVersion.patchset
+	icedove-$portVersion.patchset
+	icedove_launcher-$portVersion.patchset
 	"
 
 # UI backend: "NATIVE" (cairo-haiku) or "GTK" (cairo-gtk3-wayland-only)
 UI_BACKEND="NATIVE"
 
 ADDITIONAL_FILES="
-	iceweasel.rdef.in
-	iceweasel_launcher.rdef.in
-	gfxtest.rdef.in
+	icedove.rdef.in
+	icedove_addon.rdef.in
+	icedove_launcher.rdef.in
 	branding.zip
 	mozconfig_gtk
 	mozconfig_native
-	policies.json
+	fix_profile.sh
 	"
 
 ARCHITECTURES="x86_64"
 
+POST_INSTALL_SCRIPTS="
+	$relativePostInstallDir/fix_profile.sh
+	"
+
 PROVIDES="
-	iceweasel = $portVersion
-	app:Iceweasel = $portVersion
-	cmd:iceweasel = $portVersion
+	icedove = $portVersion
+	app:Icedove = $portVersion
+	cmd:icedove = $portVersion
 	"
 CONFLICTS="
-	iceweasel_bin
-	iceweasel_esr
-	iceweasel_esr_bin
+	icedove_bin
 	"
 REPLACES="
-	iceweasel_bin
+	icedove_bin
 	"
 REQUIRES="
 	haiku
@@ -132,14 +135,23 @@ BUILD_PREREQUIRES="
 
 PATCH()
 {
-	# extract browser branding for iceweasel
-	unzip -o $sourceDir/../../additional-files/branding.zip -o -d $sourceDir/browser/branding
+	unzip $sourceDir/../../additional-files/branding.zip -o -d $sourceDir/comm/mail/branding
 
 	find "$sourceDir/third_party/rust/" -name ".cargo-checksum.json" | while read -r file; do
 		printf '{"files":{}}' > "$file"
 	done
 
-	sed -i '/^checksum =/d' $sourceDir/Cargo.lock
+	if [ -d "$sourceDir/comm/third_party/rust/" ]; then
+		find "$sourceDir/comm/third_party/rust/" -name ".cargo-checksum.json" | while read -r file; do
+			printf '{"files":{}}' > "$file"
+		done
+	fi
+
+	sed -i 's|.*verify_vendored_dependencies.*|\t@true|' \
+    	$sourceDir/comm/mail/Makefile.in \
+    	$sourceDir/comm/suite/Makefile.in
+
+	find "$sourceDir" -name "Cargo.lock" -exec sed -i '/^checksum =/d' {} +
 
 	chmod +x \
 		$sourceDir/build/cargo-linker \
@@ -148,13 +160,6 @@ PATCH()
 
 BUILD()
 {
-	rm -f mozconfig
-	if [ "$UI_BACKEND" = "GTK" ]; then
-		cp -f $portDir/additional-files/mozconfig_gtk mozconfig
-	else
-		cp -f $portDir/additional-files/mozconfig_native mozconfig
-	fi
-
 	export MOZBUILD_STATE_PATH="$sourceDir/.mozconfig"
 
 	export RUSTFLAGS="-C link-arg=-Wl,--no-gc-sections -C force-unwind-tables=no -C codegen-units=1"
@@ -171,17 +176,30 @@ BUILD()
 
 	python3 -m ensurepip --default-pip
 
+	rm -f mozconfig
+	if [ "$UI_BACKEND" = "GTK" ]; then
+		cp -f $portDir/additional-files/mozconfig_gtk mozconfig
+	else
+		cp -f $portDir/additional-files/mozconfig_native mozconfig
+	fi
+
 	./mach -vv \
 		--no-interactive bootstrap \
 		--application-choice="Firefox for Desktop" \
 		--exclude=sysroot-wasm32-wasi
 
-	./mach python build/gn_processor.py dom/media/webrtc/third_party_build/gn-configs/webrtc.json
-
+	rm -f mozconfig
+	if [ "$UI_BACKEND" = "GTK" ]; then
+		cp -f $portDir/additional-files/mozconfig_gtk mozconfig
+	else
+		cp -f $portDir/additional-files/mozconfig_native mozconfig
+	fi
+	
 	./mach build -j4
 
 	cd tools/haiku-launcher
-	g++ -O2 -o "Iceweasel Browser" launcher.cpp -lbe
+	gcc -o "Icedove Mail" launcher.cpp -lbe
+	gcc -shared -o "Send with Icedove" addon.cpp -lbe
 }
 
 INSTALL()
@@ -196,20 +214,24 @@ INSTALL()
 
 	./mach install
 
-	mkdir -p $appsDir $binDir
+	mkdir -p $appsDir $binDir $addOnsDir/Tracker
 
-	mv /usr/local/lib/Iceweasel $appsDir/Iceweasel
-	cp "tools/haiku-launcher/Iceweasel Browser" $appsDir/Iceweasel
-	ln -s "$appsDir/Iceweasel/Iceweasel" $binDir/iceweasel
+	mv /usr/local/lib/thunderbird $appsDir/Icedove
+	mv $appsDir/Icedove/thunderbird $appsDir/Icedove/Icedove
+	mv $appsDir/Icedove/thunderbird-bin $appsDir/Icedove/icedove-bin
 
-	# disable telemetry
-	mkdir -p $appsDir/Iceweasel/distribution
-	cp -f $portDir/additional-files/policies.json $appsDir/Iceweasel/distribution
+	cp "tools/haiku-launcher/Icedove Mail" $appsDir/Icedove
+	cp "tools/haiku-launcher/Send with Icedove" $addOnsDir/Tracker
+	ln -s "$appsDir/Icedove/Icedove" $binDir/icedove
+
+	mkdir -p $postInstallDir
+	cp -f $portDir/additional-files/fix_profile.sh $postInstallDir
+	chmod -v a+rx $postInstallDir/fix_profile.sh
 
 	# arranging the files in lib directory
-	mkdir -p $appsDir/Iceweasel/lib
+	mkdir -p $appsDir/Icedove/lib
 
-	pushd $appsDir/Iceweasel
+	pushd $appsDir/Icedove
 	mv -f \
 		libgkcodecs.so       \
 		liblgpllibs.so       \
@@ -228,10 +250,10 @@ INSTALL()
 	fi
 	popd
 
-	local APP_SIGNATURE="application/x-vnd.iceweasel"
+	local APP_SIGNATURE="application/x-vnd.icedove"
 	local MAJOR="`echo "$portVersion" | cut -d. -f1`"
 	local MIDDLE="`echo "$portVersion" | cut -d. -f2`"
-	local MINOR="`echo "$portVersion" | cut -d. -f3`"
+	local MINOR="0"
 	local LONG_INFO="$SUMMARY"
 
 	sed \
@@ -240,26 +262,25 @@ INSTALL()
 		-e "s|@MIDDLE@|$MIDDLE|" \
 		-e "s|@MINOR@|$MINOR|" \
 		-e "s|@LONG_INFO@|$LONG_INFO|" \
-		$portDir/additional-files/iceweasel.rdef.in > iceweasel.rdef
+		$portDir/additional-files/icedove.rdef.in > icedove.rdef
 
 	sed \
 		-e "s|@MAJOR@|$MAJOR|" \
 		-e "s|@MIDDLE@|$MIDDLE|" \
 		-e "s|@MINOR@|$MINOR|" \
 		-e "s|@LONG_INFO@|$LONG_INFO|" \
-		$portDir/additional-files/iceweasel_launcher.rdef.in > iceweasel_launcher.rdef
+		$portDir/additional-files/icedove_launcher.rdef.in > icedove_launcher.rdef
 
-	addResourcesToBinaries iceweasel.rdef "$appsDir/Iceweasel/Iceweasel"
-	addResourcesToBinaries iceweasel_launcher.rdef "$appsDir/Iceweasel/Iceweasel Browser"
+	sed \
+		-e "s|@MAJOR@|$MAJOR|" \
+		-e "s|@MIDDLE@|$MIDDLE|" \
+		-e "s|@MINOR@|$MINOR|" \
+		-e "s|@LONG_INFO@|$LONG_INFO|" \
+		$portDir/additional-files/icedove_addon.rdef.in > icedove_addon.rdef
 
-	if [ "$UI_BACKEND" = "GTK" ] && [ -f "$appsDir/Iceweasel/gfxtest" ]; then
-		sed \
-			-e "s|@MAJOR@|$MAJOR|" \
-			-e "s|@MIDDLE@|$MIDDLE|" \
-			-e "s|@MINOR@|$MINOR|" \
-			$portDir/additional-files/gfxtest.rdef.in > gfxtest.rdef
-		addResourcesToBinaries gfxtest.rdef "$appsDir/Iceweasel/gfxtest"
-	fi
+	addResourcesToBinaries icedove.rdef $appsDir/Icedove/Icedove
+	addResourcesToBinaries icedove_launcher.rdef "$appsDir/Icedove/Icedove Mail"
+	addResourcesToBinaries icedove_addon.rdef "$addOnsDir/Tracker/Send with Icedove"
 
-	addAppDeskbarSymlink $appsDir/Iceweasel/Iceweasel
+	addAppDeskbarSymlink $appsDir/Icedove/Icedove
 }
