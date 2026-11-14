@@ -176,10 +176,10 @@ index 9eda27b..c10d1d6 100644
  
 +#include <dlfcn.h>
 +
-+// B_TRANSPARENT_WINDOW in Renku's Window.h. Older Renku releases and Haiku
-+// have neither the flag nor is_composited_desktop(), so the function is
-+// looked up at run time, and the flag is only used when it is found.
-+static const uint32 kTransparentWindowFlag = 0x01000000;
++// B_TRANSPARENT_WINDOW in RenkuOS's Window.h. Older releases and Haiku have
++// neither the flag nor is_composited_desktop(), so the function is looked up
++// at run time by its C name, and the flag is only used when it is found.
++static const uint32 kTransparentWindowFlag = 0x80000000;
 +
  QT_BEGIN_NAMESPACE
  
@@ -194,7 +194,7 @@ index 9eda27b..c10d1d6 100644
 +	if (available < 0) {
 +		typedef bool (*composited_function)();
 +		composited_function composited = (composited_function)dlsym(
-+			RTLD_DEFAULT, "_Z21is_composited_desktopv");
++			RTLD_DEFAULT, "is_composited_desktop");
 +		available = composited != NULL && composited() ? 1 : 0;
 +	}
 +	return available == 1;
