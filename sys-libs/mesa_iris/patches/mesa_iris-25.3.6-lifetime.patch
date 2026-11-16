@@ -1,0 +1,90 @@
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -488,7 +488,8 @@ haiku_display_destroy(_EGLDisplay *disp)
+    hgl_dpy->disp = NULL;
+    screen->destroy(screen); // destroy will deallocate object
+ 
+    free(hgl_dpy);
++   disp->DriverData = NULL;
+ }
+ 
+ static int
+@@ -506,7 +507,7 @@ haiku_open_render_node(void)
+          continue;
+       char path[300];
+       snprintf(path, sizeof(path), "/dev/graphics/%s", entry->d_name);
+-      fd = open(path, O_RDWR);
++      fd = open(path, O_RDWR | O_CLOEXEC);
+       if (fd >= 0)
+          break;
+    }
+@@ -525,7 +526,6 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
+ 
+    hgl_dpy->ref_count = 1;
+-   disp->DriverData = (void *)hgl_dpy;
+ 
+    struct pipe_screen *screen = NULL;
+ 
+@@ -539,7 +539,7 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+       driParseConfigFiles(&option_cache, &option_info, 0, "iris",
+                           NULL, NULL, NULL, 0, NULL, 0);
+ 
+-      struct pipe_screen_config config;
++      struct pipe_screen_config config = {};
+       config.driver_name_is_inferred = true;
+       config.options = &option_cache;
+       config.options_info = &option_info;
+@@ -561,10 +561,10 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+       }
+ 
+       screen = iris_drm_screen_create(drm_fd, &config);
+-      if (!screen) {
++      // Iris duplicates the descriptor for its owned screen/buffer manager.
++      close(drm_fd);
++      if (!screen)
+          ERROR("iris_drm_screen_create failed; falling back to software\n");
+-         close(drm_fd);
+-      }
+    }
+ 
+    if (!screen) {
+@@ -571,9 +571,17 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+       struct sw_winsys *winsys = hgl_create_sw_winsys();
+       screen = sw_screen_create(winsys);
+    }
+-   if (!screen)
++   if (!screen) {
++      free(hgl_dpy);
+       return _eglError(EGL_BAD_ALLOC, "eglInitialize");
++   }
+    hgl_dpy->disp = hgl_create_display(screen);
++   if (!hgl_dpy->disp) {
++      screen->destroy(screen);
++      free(hgl_dpy);
++      return _eglError(EGL_BAD_ALLOC, "eglInitialize");
++   }
++   disp->DriverData = (void *)hgl_dpy;
+ 
+    disp->ClientAPIs = 0;
+    if (_eglIsApiValid(EGL_OPENGL_API))
+diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
+--- a/src/gallium/frontends/hgl/hgl.c
++++ b/src/gallium/frontends/hgl/hgl.c
+@@ -377,9 +377,13 @@ hgl_create_display(struct pipe_screen* screen)
+ 	struct hgl_display* display;
+ 
+ 	display = CALLOC_STRUCT(hgl_display);
+-	assert(display);
++	if (display == NULL)
++		return NULL;
+ 	display->fscreen = CALLOC_STRUCT(pipe_frontend_screen);
+-	assert(display->fscreen);
++	if (display->fscreen == NULL) {
++		FREE(display);
++		return NULL;
++	}
+ 	display->fscreen->screen = screen;
+ 	display->fscreen->get_param = hgl_st_manager_get_param;
+ 	// display->fscreen->st_screen is used by llvmpipe
