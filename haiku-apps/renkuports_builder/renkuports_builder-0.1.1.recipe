@@ -1,0 +1,49 @@
+SUMMARY="Build client for the RenkuOSPorts package coordinator"
+DESCRIPTION="RenkuPorts Builder claims build jobs from a RenkuOSPorts coordinator, \
+builds each recipe with HaikuPorter in a local ports tree, and uploads the \
+resulting packages (or reports the failure with the build log). A small window \
+holds the settings and shows the current build, its output and recent results."
+HOMEPAGE="https://github.com/Druware/RenkuOSPorts-Portal"
+COPYRIGHT="2026 Druware"
+LICENSE="MIT"
+REVISION="1"
+SOURCE_URI="https://github.com/Druware/RenkuOSPorts-Portal/archive/refs/tags/v$portVersion.tar.gz"
+CHECKSUM_SHA256="943d5bbc36f9dc9d748625c71d775d788bdd04c8627ab2ffe8b579702209cb3f"
+SOURCE_FILENAME="RenkuOSPorts-Portal-$portVersion.tar.gz"
+SOURCE_DIR="RenkuOSPorts-Portal-$portVersion/clients/haiku"
+
+# x86_gcc2: needs C++11 and the gcc11 libnetservices; the x86 secondary is untested.
+ARCHITECTURES="all !x86_gcc2"
+SECONDARY_ARCHITECTURES="?x86"
+
+PROVIDES="
+	renkuports_builder$secondaryArchSuffix = $portVersion
+	app:RenkuPortsBuilder = $portVersion
+	"
+REQUIRES="
+	haiku$secondaryArchSuffix
+	cmd:git
+	cmd:haikuporter
+	"
+
+BUILD_REQUIRES="
+	haiku${secondaryArchSuffix}_devel
+	"
+BUILD_PREREQUIRES="
+	makefile_engine
+	cmd:g++$secondaryArchSuffix
+	cmd:make
+	"
+
+BUILD()
+{
+	make OBJ_DIR=objects $jobArgs
+}
+
+INSTALL()
+{
+	mkdir -p $appsDir $docDir
+	cp objects/RenkuPortsBuilder $appsDir/
+	cp README.md $docDir/
+	addAppDeskbarSymlink $appsDir/RenkuPortsBuilder "RenkuPorts Builder"
+}
