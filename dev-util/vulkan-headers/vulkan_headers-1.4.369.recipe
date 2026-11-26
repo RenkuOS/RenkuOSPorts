@@ -5,7 +5,7 @@ HOMEPAGE="https://www.vulkan.org/"
 COPYRIGHT="2015-2026 The Khronos Group Inc."
 LICENSE="Apache v2
 	MIT"
-REVISION="1"
+REVISION="3"
 SOURCE_URI="https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v$portVersion.tar.gz"
 SOURCE_FILENAME="Vulkan-Headers-$portVersion.tar.gz"
 CHECKSUM_SHA256="a63c6efc6f611e46aa83d65947398d548a718d3a32075e7b2238a930b3a42ced"
