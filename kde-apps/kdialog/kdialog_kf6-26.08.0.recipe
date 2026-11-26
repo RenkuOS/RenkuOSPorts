@@ -4,10 +4,11 @@ The syntax is very much inspired from the 'dialog' command (which shows text mod
 HOMEPAGE="https://invent.kde.org/utilities/kdialog/"
 COPYRIGHT="2006-2026 KDialog Team"
 LICENSE="GNU GPL v2"
-REVISION="1"
+REVISION="3"
 SOURCE_URI="https://download.kde.org/stable/release-service/$portVersion/src/kdialog-$portVersion.tar.xz"
 CHECKSUM_SHA256="523dfdd55c9f465081ea20023e3c9a5522b948ebfc758e66454b808f63931f52"
 SOURCE_DIR="kdialog-$portVersion"
+PATCHES="kdialog_kf6-$portVersion.patchset"
 
 ARCHITECTURES="all !x86_gcc2"
 SECONDARY_ARCHITECTURES="x86"
