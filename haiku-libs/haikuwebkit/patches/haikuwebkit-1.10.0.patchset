@@ -72,3 +72,209 @@ index fd988cc..9457829 100644
 -- 
 2.56.0
 
+From ea599e7e2042cccfdeebde25f02a83d0939cf04f Mon Sep 17 00:00:00 2001
+From: PulkoMandy <pulkomandy@pulkomandy.tk>
+Date: Wed, 1 Jan 2025 16:47:48 +0100
+Subject: Fix synchronous resource loading
+
+Re-applies codeberg haiku/haikuwebkit commit 70ba59db6d ("Fix
+synchronous resource loading", Haiku ticket #19322), which "Fix build
+after merge" (7f1ea94e80) dropped again, so HaikuWebKit 1.10.0 shipped
+without it.
+
+platformLoadResourceSynchronously blocks the main thread on the
+SynchronousLoaderMessageQueue, but without this CurlRequest posts its
+client callbacks to the main run loop instead of that queue, so every
+synchronous XMLHttpRequest deadlocks the main thread.
+
+As in 70ba59db6d, the CurlRequest destructor is out of line, so that
+CurlRequest.h, which WebKitLegacy's download code includes through
+WebCore's PrivateHeaders, needs only a forward declaration of
+SynchronousLoaderMessageQueue.
+---
+ .../WebCore/platform/network/curl/CurlRequest.cpp  | 14 ++++++++++++--
+ Source/WebCore/platform/network/curl/CurlRequest.h | 10 ++++++----
+ .../platform/network/curl/ResourceHandleCurl.cpp   |  2 +-
+ 3 files changed, 19 insertions(+), 7 deletions(-)
+
+diff --git a/Source/WebCore/platform/network/curl/CurlRequest.cpp b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+index 926b9d77..5d9d8ff8 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequest.cpp
++++ b/Source/WebCore/platform/network/curl/CurlRequest.cpp
+@@ -48,8 +48,9 @@ namespace WebCore {
+ 
+ WTF_MAKE_TZONE_ALLOCATED_IMPL(CurlRequest);
+ 
+-CurlRequest::CurlRequest(const ResourceRequest&request, CurlRequestClient* client, CaptureNetworkLoadMetrics captureExtraMetrics)
++CurlRequest::CurlRequest(const ResourceRequest&request, CurlRequestClient* client, CaptureNetworkLoadMetrics captureExtraMetrics, RefPtr<SynchronousLoaderMessageQueue>&& messageQueue)
+     : m_client(client)
++    , m_messageQueue(std::move(messageQueue))
+     , m_request(request.isolatedCopy())
+     , m_startState(StartState::WaitingForStart)
+     , m_formDataStream(m_request.httpBody())
+@@ -58,11 +59,14 @@ CurlRequest::CurlRequest(const ResourceRequest&request, CurlRequestClient* clien
+     ASSERT(isMainThread());
+ }
+ 
++CurlRequest::~CurlRequest() = default;
++
+ void CurlRequest::invalidateClient()
+ {
+     ASSERT(isMainThread());
+ 
+     m_client = nullptr;
++    m_messageQueue = nullptr;
+ }
+ 
+ void CurlRequest::setAuthenticationScheme(ProtectionSpace::AuthenticationScheme scheme)
+@@ -217,7 +221,13 @@ void CurlRequest::callClient(Function<void(CurlRequest&, CurlRequestClient&)>&&
+ 
+ void CurlRequest::runOnMainThread(Function<void()>&& task)
+ {
+-    ensureOnMainThread(std::move(task));
++    // for platformLoadResourceSynchronously: we need a way to execute code in the main thread
++    // while it is also locked waiting for the resource. This is done with a dedicated message
++    // queue.
++    if (m_messageQueue)
++        m_messageQueue->append(makeUnique<Function<void()>>(std::move(task)));
++    else
++        ensureOnMainThread(std::move(task));
+ }
+ 
+ void CurlRequest::runOnWorkerThreadIfRequired(Function<void()>&& task)
+diff --git a/Source/WebCore/platform/network/curl/CurlRequest.h b/Source/WebCore/platform/network/curl/CurlRequest.h
+index c99255b3..249728ec 100644
+--- a/Source/WebCore/platform/network/curl/CurlRequest.h
++++ b/Source/WebCore/platform/network/curl/CurlRequest.h
+@@ -43,6 +43,7 @@ namespace WebCore {
+ class CurlRequestClient;
+ class NetworkLoadMetrics;
+ class ResourceError;
++class SynchronousLoaderMessageQueue;
+ 
+ class CurlRequest final : public ThreadSafeRefCounted<CurlRequest>, public CurlRequestSchedulerClient, public CurlMultipartHandleClient, public CanMakeThreadSafeCheckedPtr<CurlRequest> {
+     WTF_MAKE_TZONE_ALLOCATED(CurlRequest);
+@@ -54,12 +55,12 @@ public:
+         Extended
+     };
+ 
+-    static Ref<CurlRequest> create(const ResourceRequest& request, CurlRequestClient& client, CaptureNetworkLoadMetrics captureMetrics = CaptureNetworkLoadMetrics::Basic)
++    static Ref<CurlRequest> create(const ResourceRequest& request, CurlRequestClient& client, CaptureNetworkLoadMetrics captureMetrics = CaptureNetworkLoadMetrics::Basic, RefPtr<SynchronousLoaderMessageQueue>&& messageQueue = nullptr)
+     {
+-        return adoptRef(*new CurlRequest(request, &client, captureMetrics));
++        return adoptRef(*new CurlRequest(request, &client, captureMetrics, std::move(messageQueue)));
+     }
+ 
+-    ~CurlRequest() = default;
++    ~CurlRequest();
+ 
+     WEBCORE_EXPORT void invalidateClient();
+     WEBCORE_EXPORT void setAuthenticationScheme(ProtectionSpace::AuthenticationScheme);
+@@ -90,7 +91,7 @@ public:
+     void setDownloadedFilePath(const String& path) { m_downloadFilePath = path; }
+ 
+ private:
+-    WEBCORE_EXPORT CurlRequest(const ResourceRequest&, CurlRequestClient*, CaptureNetworkLoadMetrics);
++    WEBCORE_EXPORT CurlRequest(const ResourceRequest&, CurlRequestClient*, CaptureNetworkLoadMetrics, RefPtr<SynchronousLoaderMessageQueue>&&);
+ 
+     // CheckedPtr interface
+     uint32_t checkedPtrCount() const final { return CanMakeThreadSafeCheckedPtr::checkedPtrCount(); }
+@@ -161,6 +162,7 @@ private:
+     Lock m_statusMutex;
+     bool m_cancelled { false };
+     bool m_completed { false };
++    RefPtr<SynchronousLoaderMessageQueue> m_messageQueue;
+ 
+     ResourceRequest m_request;
+     String m_user;
+diff --git a/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp b/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp
+index 8a987171..f14e476f 100644
+--- a/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp
++++ b/Source/WebCore/platform/network/curl/ResourceHandleCurl.cpp
+@@ -150,7 +150,7 @@ Ref<CurlRequest> ResourceHandle::createCurlRequest(ResourceRequest&& request, Re
+             request.addHTTPHeaderField(HTTPHeaderName::Cookie, cookieHeaderField);
+     }
+ 
+-    auto curlRequest = CurlRequest::create(request, *delegate(), CurlRequest::CaptureNetworkLoadMetrics::Basic);
++    auto curlRequest = CurlRequest::create(request, *delegate(), CurlRequest::CaptureNetworkLoadMetrics::Basic, RefPtr<SynchronousLoaderMessageQueue>(d->m_messageQueue));
+ 
+     return curlRequest;
+ }
+-- 
+2.54.0 (Apple Git-157)
+
+From c63e7002157e7ad979ff6fc05c9229ea2e731e9a Mon Sep 17 00:00:00 2001
+From: DruSatori <dru@druware.com>
+Date: Tue, 24 Nov 2026 15:52:26 -0500
+Subject: Set window.opener for pages created by
+ createWindow/dispatchCreatePage
+
+WebCore does not set the opener of a new page's main frame itself: for
+window.open it only asserts the opener after ChromeClient::createWindow
+returns, and for target=_blank it does the same after
+LocalFrameLoaderClient::dispatchCreatePage. Setting it is left to the
+embedder, and the Haiku port never did, so popups always saw
+window.opener === null.
+
+Mirror Mac WebKitLegacy (WebChromeClient::createWindow and
+WebFrameLoaderClient::dispatchCreatePage): call
+setOpenerForWebKitLegacy() on the new main frame unless the window was
+opened with noopener/noreferrer (NewFrameOpenerPolicy::Suppress).
+---
+ .../haiku/WebCoreSupport/ChromeClientHaiku.cpp            | 8 ++++++--
+ .../haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp       | 8 ++++++--
+ 2 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp b/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp
+index ddd829e8..e402f0ab 100644
+--- a/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp
++++ b/Source/WebKitLegacy/haiku/WebCoreSupport/ChromeClientHaiku.cpp
+@@ -133,7 +133,7 @@ void ChromeClientHaiku::focusedFrameChanged(Frame*)
+     notImplemented();
+ }
+ 
+-RefPtr<Page> ChromeClientHaiku::createWindow(LocalFrame& /*frame*/, const WTF::String&, const WindowFeatures& features, const NavigationAction& /*action*/)
++RefPtr<Page> ChromeClientHaiku::createWindow(LocalFrame& frame, const WTF::String&, const WindowFeatures& features, const NavigationAction& /*action*/)
+ {
+ 	// FIXME: I believe the frame is important for cloning session information.
+ 	// From looking through the Chromium port code, it is passed to the
+@@ -164,8 +164,12 @@ RefPtr<Page> ChromeClientHaiku::createWindow(LocalFrame& /*frame*/, const WTF::S
+ 	if (features.height)
+ 		windowFrame.bottom = windowFrame.top + *features.height - 1;
+ 
+-	return m_webPage->createNewPage(windowFrame, features.dialog.value_or(false),
++	Page* page = m_webPage->createNewPage(windowFrame, features.dialog.value_or(false),
+ 		features.resizable.value_or(true), true, m_webPage->GetContext());
++	// WebCore leaves setting the opener to the embedder, as in Mac WebChromeClient.
++	if (page && !features.wantsNoOpener())
++		page->mainFrame().setOpenerForWebKitLegacy(&frame);
++	return page;
+ }
+ 
+ void ChromeClientHaiku::show()
+diff --git a/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp
+index 6e719a06..54f0836f 100644
+--- a/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp
++++ b/Source/WebKitLegacy/haiku/WebCoreSupport/FrameLoaderClientHaiku.cpp
+@@ -517,12 +517,16 @@ void FrameLoaderClientHaiku::dispatchWillSubmitForm(FormState&, URL&&, String&&,
+     function();
+ }
+ 
+-LocalFrame* FrameLoaderClientHaiku::dispatchCreatePage(const NavigationAction& /*action*/, NewFrameOpenerPolicy, const WTF::String& openedMainFrame)
++LocalFrame* FrameLoaderClientHaiku::dispatchCreatePage(const NavigationAction& /*action*/, NewFrameOpenerPolicy policy, const WTF::String& openedMainFrame)
+ {
+     CALLED();
+     WebCore::Page* page = m_webPage->createNewPage();
+-    if (page)
++    if (page) {
++        // WebCore leaves setting the opener to the embedder, as in Mac WebFrameLoaderClient.
++        if (policy == NewFrameOpenerPolicy::Allow && m_webFrame && m_webFrame->Frame())
++            page->mainFrame().setOpenerForWebKitLegacy(m_webFrame->Frame());
+         return static_cast<WebCore::LocalFrame*>(&page->mainFrame());
++    }
+ 
+     return 0;
+ }
+-- 
+2.54.0 (Apple Git-157)
+
