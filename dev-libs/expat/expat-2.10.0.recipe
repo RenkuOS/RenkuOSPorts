@@ -7,7 +7,8 @@ COPYRIGHT="1998-2000 Thai Open Source Software Center Ltd and Clark Cooper
 	2001-2025 Expat maintainers."
 LICENSE="MIT"
 REVISION="1"
-SOURCE_URI="https://downloads.sourceforge.net/expat/expat-$portVersion.tar.bz2"
+SOURCE_URI="https://github.com/libexpat/libexpat/releases/download/R_${portVersion//./_}/expat-$portVersion.tar.bz2
+	https://downloads.sourceforge.net/expat/expat-$portVersion.tar.bz2"
 #SOURCE_URI="git+https://github.com/libexpat/libexpat?signed#tag=R_${portVersion//./_}"
 CHECKSUM_SHA256="44e0139015f1c9908d0876b5516235136f16b14932d8f6634a16737a12742f53"
 PATCHES="expat-$portVersion.patchset"
