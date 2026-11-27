@@ -102,3 +102,26 @@ the restored glvnd libraries, the corrected Mesa vendor and LLVM 21.
 - Check future system updates retain the intended stack after repository
   publication. This PR does not publish packages or change the default image.
 - Complete the kernel source license/packaging review recorded in Source #98.
+
+## 2026-11-27: RenkuOS hrev60072+1318
+
+OS: `hrev60072+1318`, x86_64. SDK: `haiku_devel-..._hrev60072_1318-1`.
+Compiler: GCC 15.3.0 (2026_10_11).
+
+The installed prototype driver is the same source (Source `544c5b7`), MD5
+`0796534154eb79c888c36f0accca4624`. No driver was rebuilt or replaced for
+these runs.
+
+```text
+rtest: PASS
+drmstress: 4096 submissions, elapsed 0.147 s, PASS
+renderer=Mesa Intel(R) HD Graphics 515 (SKL GT2)
+PASS failures=0
+PASS: 32 texture uploads with two live contexts
+PASS: 300 frame present, 0 mismatches
+```
+
+GLTeapot loaded the glvnd GL kit and both EGL vendor paths and mapped
+`intel render mmap` areas. The driver recipe's ABI pin is updated to this
+build. The three hpkg builds on `_1318` and a package-installed cold boot
+remain pending.

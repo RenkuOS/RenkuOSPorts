@@ -43,7 +43,7 @@ with matching `haiku` and `haiku_devel` packages. Install HaikuPorter's normal
 build prerequisites and use its dependency resolver for the other tools.
 
 The driver recipe deliberately requires **exactly**
-`r1~beta6_hrev60072_580` for both `haiku` and `haiku_devel` (build00074).
+`r1~beta6_hrev60072_1318` for both `haiku` and `haiku_devel`.
 It uses private kernel interfaces. Do not loosen this requirement merely to
 make a package install on a different build. Rebuild and cold-boot test it
 against that build first. User-space recipes use `haiku`; HaikuPorter adds
@@ -83,7 +83,7 @@ graphics change. Preserve the system's packaged `intel_extreme` driver.
 After the native build, from HaikuPorter's `packages` directory:
 
 ```sh
-pkgman install -H ./intel_extreme_gen9-2026.10.16-2-x86_64.hpkg
+pkgman install -H ./intel_extreme_gen9-2026.10.16-3-x86_64.hpkg
 pkgman install ./libglvnd-1.7.0-6-x86_64.hpkg ./mesa_iris-25.3.6-3-x86_64.hpkg
 ```
 
@@ -155,6 +155,19 @@ RenkuOS SDK. Its newly compiled stress client passed 4096 submissions against
 the existing loaded driver. The strengthened graphics clients also passed on
 iris and llvmpipe, including resize. See [the validation record](VALIDATION.md)
 for the exact scope and output identities.
+
+## Evidence from the Mi Air on 2026-11-27
+
+RenkuOS `hrev60072+1318`, x86_64. The same driver source is loaded from the
+prototype binary MD5 `0796534154eb79c888c36f0accca4624`; no package built from
+this tree was installed.
+
+- `rtest` PASS; `drmstress` 4096 submissions PASS in 0.147 s.
+- iris present 300 frames, 0 mismatches; FBO PASS; 32 BGRA uploads PASS.
+- GLTeapot loads the glvnd GL kit and EGL vendor and maps `intel render mmap`
+  areas.
+- The driver recipe now pins this build. Rebuilding the three packages on
+  `_1318` remains pending.
 
 ## Rollback
 
