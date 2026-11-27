@@ -1,0 +1,124 @@
+SUMMARY="A MinGW-w64 toolchain for Windows targets on RenkuOS's clang"
+DESCRIPTION="llvm-mingw builds programs and DLLs for 32- and 64-bit x86 Windows with clang, \
+lld and the LLVM tools that RenkuOS already has (llvm21). It adds what those lack for Windows \
+targets: the MinGW-w64 headers and C runtime (UCRT by default), winpthreads, compiler-rt and \
+libc++, and the x86_64-w64-mingw32-* and i686-w64-mingw32-* commands (clang, gcc, g++, ar, \
+windres, widl and the others) that build systems for MinGW expect. DXVK and vkd3d-proton are \
+built with it.
+
+The toolchain lives in /boot/system/develop/tools/llvm_mingw; its target-prefixed commands are \
+in /boot/system/bin."
+HOMEPAGE="https://github.com/mstorsjo/llvm-mingw"
+COPYRIGHT="2018-2025 Martin Storsjö
+	2009-2025 The mingw-w64 project
+	2003-2025 The LLVM project"
+LICENSE="ISC
+	Apache v2 with LLVM Exception
+	ZPL 2.1 (mingw-w64)
+	MIT
+	Public Domain"
+REVISION="1"
+SOURCE_URI="https://github.com/mstorsjo/llvm-mingw/archive/refs/tags/$portVersion.tar.gz"
+CHECKSUM_SHA256="326980d3a7a57fd1a47d7e81bf52c02ffadb0f67730fa92e358092c26bf6c6ac"
+SOURCE_FILENAME="llvm-mingw-$portVersion.tar.gz"
+SOURCE_DIR="llvm-mingw-$portVersion"
+# The LLVM release this llvm-mingw tag is made for, and the source of RenkuOS's llvm21: the
+# runtimes are built from the same source as the clang that uses them.
+llvmVersion="21.1.8"
+SOURCE_URI_2="https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvmVersion/llvm-project-$llvmVersion.src.tar.xz"
+CHECKSUM_SHA256_2="4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142"
+SOURCE_DIR_2="llvm-project-$llvmVersion.src"
+# The mingw-w64 commit that this llvm-mingw tag pins (MINGW_W64_VERSION in build-mingw-w64.sh).
+mingwGitRev="c4ae0f47b9adf0b6b91dcc906f5b1fbfe342bb42"
+SOURCE_URI_3="https://github.com/mingw-w64/mingw-w64/archive/$mingwGitRev.tar.gz"
+CHECKSUM_SHA256_3="c082d51c83af9e38bcf11bd1521502afa9a792fc9a9c75182fa78a7be6cd35e1"
+SOURCE_FILENAME_3="mingw-w64-$mingwGitRev.tar.gz"
+SOURCE_DIR_3="mingw-w64-$mingwGitRev"
+
+ARCHITECTURES="x86_64"
+
+targetArchs="i686 x86_64"
+targetTools="addr2line ar as c++ clang clang++ clang-scan-deps dlltool g++ gcc ld llvm-ar \
+	llvm-ranlib nm objcopy objdump ranlib readelf size strings strip widl windres"
+
+PROVIDES="
+	llvm_mingw = $portVersion
+	"
+for arch in $targetArchs; do
+	for tool in $targetTools; do
+		PROVIDES+="
+	cmd:${arch}_w64_mingw32_$(echo $tool | tr - _) = $portVersion
+	"
+	done
+done
+
+# By package name, not cmd:clang: the toolchain uses clang 21's own headers
+# (lib/clang/21/include), which another major version of clang would not have.
+REQUIRES="
+	haiku
+	llvm21 >= $llvmVersion
+	llvm21_clang >= $llvmVersion
+	llvm21_lld >= $llvmVersion
+	"
+
+BUILD_REQUIRES="
+	haiku_devel
+	llvm21 >= $llvmVersion
+	llvm21_clang >= $llvmVersion
+	llvm21_lld >= $llvmVersion
+	"
+BUILD_PREREQUIRES="
+	cmd:awk
+	cmd:cmake
+	cmd:gcc
+	cmd:ld
+	cmd:make
+	cmd:ninja
+	cmd:python3
+	cmd:sed
+	cmd:xargs
+	"
+
+relativeInstallDir="develop/tools/llvm_mingw"
+installDir="$prefix/$relativeInstallDir"
+
+BUILD()
+{
+	# llvm-mingw's scripts find the sources beside them, and clone them only when missing.
+	ln -sfn "$sourceDir2" llvm-project
+	ln -sfn "$sourceDir3" mingw-w64
+}
+
+INSTALL()
+{
+	# Each step needs the previous ones installed in the toolchain's own directory (the C
+	# runtime needs the headers, libc++ needs the C runtime and compiler-rt), and widl has its
+	# installation directory compiled in, so the steps build straight into $installDir.
+	export TOOLCHAIN_ARCHS="$targetArchs"
+	./install-wrappers.sh "$installDir" --host-clang=clang-21
+	./build-mingw-w64-tools.sh "$installDir"
+	./build-mingw-w64.sh "$installDir" --enable-cfguard
+	./build-compiler-rt.sh "$installDir" --enable-cfguard
+	./build-libcxx.sh "$installDir" --enable-cfguard
+	./build-mingw-w64-libraries.sh "$installDir" --enable-cfguard
+
+	# libtool archives name the build directory, and nothing needs them.
+	find "$installDir" -name '*.la' -delete
+
+	mkdir -p "$binDir"
+	for arch in $targetArchs; do
+		for tool in $targetTools; do
+			symlinkRelative -sfn "$installDir/bin/$arch-w64-mingw32-$tool" "$binDir"
+		done
+	done
+}
+
+TEST()
+{
+	export PATH="$installDir/bin:$PATH"
+	cd test
+	for arch in $targetArchs; do
+		$arch-w64-mingw32-clang hello.c -o hello-$arch.exe
+		$arch-w64-mingw32-clang++ -std=c++17 hello-exception.cpp -o hello-exception-$arch.exe
+	done
+}

@@ -6,6 +6,7 @@ import json, os, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 tree, arch, out = sys.argv[1:4]
+tree = os.path.abspath(tree)
 
 # The parts of HaikuPorter's commonRecipeScriptHead that recipes call at the top level.
 HEAD = r'''

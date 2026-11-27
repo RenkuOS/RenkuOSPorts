@@ -84,7 +84,7 @@ LIGHT="perl m4 autoconf automake libtool autoconf_archive diffutils patch which 
 	mpc nasm openssl ninja coreutils bison libpaper2 tiff4.4 ca_root_certificates"
 
 # --do-bootstrap obsoleted every package it found and then crashed. With gettext's
-# documentation tools cut (RenkuOSPorts branch bootstrap/arm64), the way to a full
+# documentation tools cut (an arm64 condition in the gettext recipe), the way to a full
 # Python has no cycle left, so build it like stage A.
 stageA $LIGHT gettext xz_utils python3.10
 mark "packages: $(ls packages | tr "\n" " ")"

@@ -135,6 +135,15 @@ BUILD_PREREQUIRES="
 	cmd:make
 	cmd:makeinfo
 	"
+# arm64: the build guest has no groff or makeinfo as system packages. groff pulls
+# in netpbm, jasper, and mesa, and makeinfo (texinfo) needs gettext. Neither is
+# used: the release tarball ships its man pages and info manual already built.
+noMakeinfo=
+if [ "$effectiveTargetArchitecture" = arm64 ]; then
+	BUILD_PREREQUIRES="${BUILD_PREREQUIRES/cmd:groff}"
+	BUILD_PREREQUIRES="${BUILD_PREREQUIRES/cmd:makeinfo}"
+	noMakeinfo="MAKEINFO=:"
+fi
 
 BUILD()
 {
@@ -145,7 +154,7 @@ BUILD()
 		--disable-rpath \
 		--disable-static \
 		--disable-maintainer-mode
-	make $jobArgs AUTOCONF=: AUTOMAKE=: AUTOHEADER=: ACLOCAL=:
+	make $jobArgs AUTOCONF=: AUTOMAKE=: AUTOHEADER=: ACLOCAL=: $noMakeinfo
 }
 
 INSTALL()

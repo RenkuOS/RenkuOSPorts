@@ -1,0 +1,330 @@
+From 3fe490da8f76d52f78c5f24197b6b08c474d32e6 Mon Sep 17 00:00:00 2001
+From: Ian <idumych@gmail.com>
+Date: Sun, 22 Nov 2026 22:15:54 -0800
+Subject: [PATCH 1/3] Haiku: queue network notifications for the supplicant
+ thread directly
+
+The network event looper posted every notification (joined, left,
+scanned) to the application thread, which queued it for the supplicant
+thread. But the application thread also runs the network configuration
+dialog, modally: while the dialog is open, and whenever a join request
+asks for the password again, notifications wait behind it.
+
+On a QCA6174 (atheros10kwifi) joining a WPA2 network, the scan result
+reached the supplicant 33 seconds late, after the password was typed,
+and the join notification never arrived before the supplicant's
+10 second authentication timeout. It kept the access point's message 1
+of the 4-way handshake aside ("Not associated - Delay processing of
+received EAPOL frame"), gave up and deauthenticated, and the user was
+asked for the password again.
+
+The looper now puts each notification straight into the supplicant
+thread's event queue, which already has its own lock and wakes the event
+loop through the notify socket.
+
+Assisted-by: claude-opus-5-5
+Signed-off-by: Ian <idumych@gmail.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PoWUVNAjBS5LqoUC1otv9w
+---
+ src/drivers/driver_haiku_events.cpp         | 13 ++++++---
+ wpa_supplicant/wpa_gui-haiku/main_haiku.cpp | 30 +++++++++++++++++++++
+ 2 files changed, 40 insertions(+), 3 deletions(-)
+
+diff --git a/src/drivers/driver_haiku_events.cpp b/src/drivers/driver_haiku_events.cpp
+index e8fcc1c..41b66a8 100644
+--- a/src/drivers/driver_haiku_events.cpp
++++ b/src/drivers/driver_haiku_events.cpp
+@@ -23,6 +23,9 @@
+ #include <new>
+ 
+ 
++extern "C" status_t haiku_queue_network_event(BMessage *message);
++
++
+ class EventLooper : public BLooper {
+ public:
+ 	EventLooper(void *context, void (*callback)(void *, const char *, int))
+@@ -55,9 +58,13 @@ protected:
+ 		if (message->FindString("interface", &interfaceName) != B_OK)
+ 			return;
+ 
+-		message->AddPointer("callback", (void *)fCallback);
+-		message->AddPointer("context", fContext);
+-		be_app->PostMessage(message);
++		BMessage *event = new(std::nothrow) BMessage(*message);
++		if (event == NULL)
++			return;
++
++		event->AddPointer("callback", (void *)fCallback);
++		event->AddPointer("context", fContext);
++		haiku_queue_network_event(event);
+ 	}
+ 
+ private:
+diff --git a/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp b/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
+index 71da911..7559978 100644
+--- a/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
++++ b/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
+@@ -115,6 +115,10 @@ virtual	void					MessageReceived(BMessage *message);
+ 
+ 		status_t				RunSupplicantInMainThread();
+ 
++			// Queues a network notification for the supplicant thread,
++			// from any thread. Takes ownership of the message.
++		status_t				QueueNetworkEvent(BMessage *message);
++
+ private:
+ static	int32					_SupplicantThread(void *data);
+ static	void					_EventLoopProcessEvents(int sock,
+@@ -304,6 +308,32 @@ WPASupplicantApp::_SupplicantThread(void *data)
+ }
+ 
+ 
++status_t
++WPASupplicantApp::QueueNetworkEvent(BMessage *message)
++{
++	return _EnqueueAndNotify(message);
++}
++
++
++/*!	Called by the network event looper (driver_haiku_events.cpp) for each
++	notification. They go straight to the supplicant thread's queue rather
++	than through the application thread: that one runs the modal network
++	configuration dialog, and a join notification waiting behind it made the
++	supplicant time out the association it was waiting for.
++*/
++extern "C" status_t
++haiku_queue_network_event(BMessage *message)
++{
++	WPASupplicantApp *app = dynamic_cast<WPASupplicantApp *>(be_app);
++	if (app == NULL) {
++		delete message;
++		return B_ERROR;
++	}
++
++	return app->QueueNetworkEvent(message);
++}
++
++
+ status_t
+ WPASupplicantApp::_EnqueueAndNotify(BMessage *message)
+ {
+-- 
+2.56.1
+
+
+From 64cce2f29bcf180d8a89ae28b0e3175abf6d05de Mon Sep 17 00:00:00 2001
+From: Ian <idumych@gmail.com>
+Date: Sun, 22 Nov 2026 22:16:04 -0800
+Subject: [PATCH 2/3] Haiku: don't fail a join that timed out while connected
+
+A join request is given 15 seconds to reach WPA_COMPLETED. The
+completion is noticed through a state change message to the application
+thread; when that thread was busy with the modal configuration dialog,
+the timeout could be handled first. The join was then treated as failed
+although the interface was connected: the supplicant left the network
+and asked for the password again ("Failed to join network. (Incorrect
+password?)").
+
+When the timeout comes, a join to an interface that is in WPA_COMPLETED
+now counts as successful.
+
+Assisted-by: claude-opus-5-5
+Signed-off-by: Ian <idumych@gmail.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PoWUVNAjBS5LqoUC1otv9w
+---
+ wpa_supplicant/wpa_gui-haiku/main_haiku.cpp | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp b/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
+index 7559978..38f9c09 100644
+--- a/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
++++ b/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
+@@ -889,8 +889,17 @@ WPASupplicantApp::_InterfaceStateChangeCallback(const wpa_supplicant *interface,
+ 	int32 newState;
+ 	status_t result = B_ERROR;
+ 	if (message->what == kMsgJoinTimeout) {
+-		_FailedToJoin(interface, *originalMessage);
+-		result = B_TIMED_OUT;
++		if (originalMessage->what == kMsgWPAJoinNetwork && interface != NULL
++			&& interface->wpa_state == WPA_COMPLETED) {
++			// We are connected, the completion notification just didn't
++			// reach us in time. Don't drop the connection and ask for the
++			// password again.
++			_SuccessfullyJoined(interface, *originalMessage);
++			result = B_OK;
++		} else {
++			_FailedToJoin(interface, *originalMessage);
++			result = B_TIMED_OUT;
++		}
+ 	} else if (message->FindInt32("newState", &newState) == B_OK) {
+ 		switch (newState) {
+ 			case WPA_COMPLETED:
+-- 
+2.56.1
+
+
+From 366f3f93d1c1113f3ac1efb86d6ba54337970c89 Mon Sep 17 00:00:00 2001
+From: Ian <idumych@gmail.com>
+Date: Sun, 22 Nov 2026 22:16:24 -0800
+Subject: [PATCH 3/3] Haiku: don't restart a join to the network we are on
+
+When the access point drops us, the supplicant reconnects by itself.
+But net_server also sends a join request for the network on its next
+scan, without the password and the authentication mode. The supplicant
+then asked for the password again, and joining with it removed the
+network and added it anew, which tore down the connection the
+supplicant had just made by itself. The user saw the password being
+refused over and over.
+
+The application now remembers, for this session, the password and
+authentication mode of each network joined with one, and fills them into
+a later join request that lacks them. And a join request for the network
+the interface is already set up for, with the same password, while it is
+connected or busy connecting, no longer starts over: it only waits for
+(or reports at once) the completion.
+
+Assisted-by: claude-opus-5-5
+Signed-off-by: Ian <idumych@gmail.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PoWUVNAjBS5LqoUC1otv9w
+---
+ wpa_supplicant/wpa_gui-haiku/main_haiku.cpp | 85 +++++++++++++++++++++
+ 1 file changed, 85 insertions(+)
+
+diff --git a/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp b/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
+index 38f9c09..90c6538 100644
+--- a/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
++++ b/wpa_supplicant/wpa_gui-haiku/main_haiku.cpp
+@@ -130,6 +130,8 @@ static	void					_EventLoopProcessEvents(int sock,
+ 		bool					_CheckAskForConfig(BMessage *message);
+ 
+ 		status_t				_JoinNetwork(BMessage *message);
++		bool					_IsAlreadyJoining(wpa_supplicant *interface,
++									BMessage *message);
+ 		status_t				_LeaveNetwork(BMessage *message);
+ 
+ 		status_t				_NotifyNetworkEvent(BMessage *message);
+@@ -162,6 +164,13 @@ static	void					_SendReplyIfNeeded(BMessage &message,
+ 								fWatchingEntryList;
+ 		BLocker					fWatchingEntryListLocker;
+ 
++			// Networks joined with a password during this session, by name:
++			// "authentication" and "password" for each, so that a join request
++			// without them (net_server's auto-join after the access point
++			// dropped us) doesn't ask for the password again. Only used from
++			// the application thread.
++		BMessage				fSessionNetworks;
++
+ 		wpa_global *			fWPAGlobal;
+ 		wpa_params				fWPAParameters;
+ };
+@@ -247,6 +256,20 @@ WPASupplicantApp::MessageReceived(BMessage *message)
+ 				}
+ 			}
+ 
++			const char *name = NULL;
++			uint32 authentication;
++			const char *password = NULL;
++			if (message->FindString("name", &name) == B_OK
++				&& message->FindUInt32("authentication", &authentication)
++					== B_OK
++				&& message->FindString("password", &password) == B_OK) {
++				BMessage known;
++				known.AddUInt32("authentication", authentication);
++				known.AddString("password", password);
++				fSessionNetworks.RemoveName(name);
++				fSessionNetworks.AddMessage(name, &known);
++			}
++
+ 			_EnqueueAndNotify(DetachCurrentMessage());
+ 				// The event processing code will send the reply.
+ 			return;
+@@ -425,6 +448,19 @@ WPASupplicantApp::_CheckAskForConfig(BMessage *message)
+ 	if (!message->HasString("name"))
+ 		return true;
+ 
++	BMessage known;
++	if ((!message->HasString("password")
++			|| !message->HasUInt32("authentication"))
++		&& fSessionNetworks.FindMessage(message->FindString("name"), &known)
++			== B_OK) {
++		message->RemoveName("authentication");
++		message->RemoveName("password");
++		message->AddUInt32("authentication", known.GetUInt32("authentication",
++			B_NETWORK_AUTHENTICATION_NONE));
++		message->AddString("password", known.GetString("password", ""));
++		return false;
++	}
++
+ 	uint32 authMode = B_NETWORK_AUTHENTICATION_NONE;
+ 	if (message->FindUInt32("authentication", &authMode) != B_OK)
+ 		return true;
+@@ -451,6 +487,43 @@ WPASupplicantApp::_CheckAskForConfig(BMessage *message)
+ }
+ 
+ 
++/*!	Whether \a interface is already set up for the network \a message asks
++	to join, with the same password, and is connected or busy connecting to
++	it. Called from the event loop only.
++*/
++bool
++WPASupplicantApp::_IsAlreadyJoining(wpa_supplicant *interface,
++	BMessage *message)
++{
++	const char *name = NULL;
++	if (message->FindString("name", &name) != B_OK)
++		return false;
++	const char *password = message->GetString("password", NULL);
++
++	wpa_ssid *network = wpa_config_get_network(interface->conf, 0);
++	if (network == NULL || network->disabled
++		|| wpa_config_get_network(interface->conf, 1) != NULL)
++		return false;
++
++	size_t nameLength = strlen(name);
++	if (network->ssid_len != nameLength
++		|| memcmp(network->ssid, name, nameLength) != 0)
++		return false;
++
++	if (password != NULL) {
++		if (network->passphrase == NULL
++			|| strcmp(network->passphrase, password) != 0)
++			return false;
++	} else if (network->passphrase != NULL || network->psk_set)
++		return false;
++
++	// Inactive or disabled means nothing is in progress; otherwise we are
++	// connected, connecting, or between our own reconnection attempts.
++	return interface->wpa_state != WPA_INACTIVE
++		&& interface->wpa_state != WPA_INTERFACE_DISABLED;
++}
++
++
+ status_t
+ WPASupplicantApp::_JoinNetwork(BMessage *message)
+ {
+@@ -470,6 +543,18 @@ WPASupplicantApp::_JoinNetwork(BMessage *message)
+ 
+ 		interface = wpa_supplicant_add_iface(fWPAGlobal, &interfaceOptions,
+ 			NULL);
++	} else if (_IsAlreadyJoining(interface, message)) {
++		// Asked to join the network we are already connected to, or
++		// reconnecting to by ourselves (net_server's auto-join after the
++		// access point dropped us): starting over would only tear that
++		// connection down. Just report when it completes.
++		_StartWatchingInterfaceChanges(interface,
++			_InterfaceStateChangeCallback, message);
++		if (interface->wpa_state == WPA_COMPLETED) {
++			wpa_supplicant_haiku_notify_state_change(interface, WPA_COMPLETED,
++				WPA_COMPLETED);
++		}
++		return B_OK;
+ 	} else {
+ 		// Disable everything
+ 		wpa_supplicant_disable_network(interface, NULL);
+-- 
+2.56.1
+

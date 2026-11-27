@@ -68,6 +68,13 @@ PROVIDES_regional="
 	noto_regional = $portVersion
 	"
 
+# INSTALL unpacks the fonts with tar and gzip, which the build chroot only has
+# if asked.
+BUILD_PREREQUIRES="
+	cmd:gzip
+	cmd:tar
+	"
+
 # Enable bash extended globbing to more easily exclude non-regional fonts from
 # the regional package.
 shopt -s extglob

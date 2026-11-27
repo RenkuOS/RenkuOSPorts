@@ -1,0 +1,1603 @@
+From 05c85d744c0a3023e7a436633b2a19f7d39baafe Mon Sep 17 00:00:00 2001
+From: Augustin Cavalier <waddlesplash@gmail.com>
+Date: Fri, 2 Jan 2026 09:42:13 -0600
+Subject: [PATCH 1/8] renderdoc: Add Haiku platform support
+
+---
+ include/renderdoc_app.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/renderdoc_app.h b/include/renderdoc_app.h
+index b2d10c5..debd0c7 100644
+--- a/include/renderdoc_app.h
++++ b/include/renderdoc_app.h
+@@ -35,7 +35,7 @@
+ 
+ #if defined(WIN32) || defined(__WIN32__) || defined(_WIN32) || defined(_MSC_VER)
+ #define RENDERDOC_CC __cdecl
+-#elif defined(__linux__)
++#elif defined(__linux__) || defined(__HAIKU__)
+ #define RENDERDOC_CC
+ #elif defined(__APPLE__)
+ #define RENDERDOC_CC
+-- 
+2.47.3
+
+
+From a1ebf8bbe9f4882ddffa7202af855d4d922ff1d3 Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Sat, 21 Nov 2026 19:01:02 +1000
+Subject: [PATCH 2/8] egl/haiku: Do not call a pbuffer's missing window hook.
+
+A pbuffer's framebuffer is created with no BitmapHook (winsysContext
+NULL), but eglMakeCurrent on it calls update_size(), which asks that
+hook for the window's size: a NULL call. Every program that made a
+pbuffer current crashed there (Segment violation in update_size, from
+haiku_make_current). An eglSwapBuffers on one would have ended the same
+way in hgl_winsys_displaytarget_display, which hands the frame to the
+hook.
+
+update_size() now leaves a framebuffer without a hook alone (a pbuffer
+keeps the size it was created with), a swap of anything but a window
+surface does nothing, as EGL defines it for pbuffers, and the winsys
+no longer hands a frame to a missing hook (the front-buffer flush of a
+pbuffer takes that path too).
+---
+ src/egl/drivers/haiku/egl_haiku.cpp         | 8 ++++++++
+ src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp | 5 ++++-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index f2f75c0..5d4b19b 100644
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -190,6 +190,9 @@ static void
+ update_size(struct hgl_buffer *buffer)
+ {
+    uint32_t newWidth, newHeight;
++   // A pbuffer has no window to ask: its size is fixed at creation.
++   if (buffer->winsysContext == NULL)
++      return;
+    ((BitmapHook *)buffer->winsysContext)->GetSize(newWidth, newHeight);
+    if (buffer->newWidth != newWidth || buffer->newHeight != newHeight) {
+       buffer->newWidth = newWidth;
+@@ -207,6 +210,11 @@ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
+    if (hgl_ctx == NULL)
+       return EGL_FALSE;
+ 
++   // EGL gives a swap of a pbuffer no effect, and a pbuffer has no window
++   // (BitmapHook) to hand a frame to.
++   if (surf->Type != EGL_WINDOW_BIT)
++      return EGL_TRUE;
++
+    struct st_context *st = hgl_ctx->ctx->st;
+    struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
+ 
+diff --git a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp
+index 6097b11..db026df 100644
+--- a/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp
++++ b/src/gallium/winsys/sw/hgl/hgl_sw_winsys.cpp
+@@ -214,7 +214,10 @@ hgl_winsys_displaytarget_display(struct sw_winsys* winsys,
+    unsigned nboxes,
+    struct pipe_box *box)
+ {
+-	assert(contextPrivate);
++	// A pbuffer's framebuffer has no BitmapHook: nothing to show its front
++	// buffer in.
++	if (contextPrivate == NULL)
++		return;
+ 
+ 	struct haiku_displaytarget* haikuDisplayTarget
+ 		= hgl_sw_displaytarget(displayTarget);
+-- 
+2.47.3
+
+
+From c2531f16d8e8032abf8472790db8eef23eea5fa9 Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Sat, 21 Nov 2026 19:02:18 +1000
+Subject: [PATCH 3/8] egl/haiku: Honour the context attributes, and offer
+ EGL_KHR_create_context_no_error.
+
+haiku_create_context ignored the attribute list: hgl_create_context
+always asked the state tracker for OpenGL 1.0 compatibility, so a
+request for a 4.5 core context got 4.6 compatibility, and debug,
+forward-compatible and no-error contexts were ordinary ones.
+
+The context's API, profile, version and flags, as _eglInitContext
+reads them, now go to st_api_create_context. The profile follows the
+WGL frontend (stw_create_context_attribs): core only for core 3.2 or
+later, compatibility otherwise, because there are no profiles before
+3.2 and Mesa has no 3.1 with GL_ARB_compatibility. hgl_create_context
+takes the state tracker's attributes instead of a visual. A context
+the state tracker cannot make fails with EGL_BAD_MATCH, the
+KHR_create_context error for an unsupported version, profile or flags;
+before, it failed with no error set.
+
+With no-error contexts passed on (ST_CONTEXT_FLAG_NO_ERROR), the
+display offers EGL_KHR_create_context_no_error, as the DRI driver
+does. Wine's win32u requires it of an EGL display, along with
+EGL_KHR_create_context and EGL_KHR_no_config_context
+(init_egl_platform in dlls/win32u/opengl.c), and so had no OpenGL
+here.
+---
+ src/egl/drivers/haiku/egl_haiku.cpp     | 57 +++++++++++++++++++++++--
+ src/gallium/frontends/hgl/hgl.c         | 12 +-----
+ src/gallium/frontends/hgl/hgl_context.h |  3 +-
+ 3 files changed, 57 insertions(+), 15 deletions(-)
+
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index 5d4b19b..c16cb98 100644
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -26,6 +26,7 @@
+ #include <errno.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <string.h>
+ 
+ #include <algorithm>
+ 
+@@ -380,6 +381,7 @@ haiku_initialize_impl(_EGLDisplay *disp, void *platformDisplay)
+       disp->Extensions.KHR_gl_colorspace = EGL_TRUE;
+ 
+    disp->Extensions.KHR_create_context = EGL_TRUE;
++   disp->Extensions.KHR_create_context_no_error = EGL_TRUE;
+    disp->Extensions.KHR_reusable_sync = EGL_TRUE;
+ 
+    haiku_add_configs_for_visuals(disp);
+@@ -428,6 +430,45 @@ haiku_terminate(_EGLDisplay *disp)
+ 
+ // #pragma mark EGLContext
+ 
++// The state tracker's attributes for an EGL context: its API, profile,
++// version and flags, as _eglInitContext read them from the attribute list.
++// The profile follows the WGL frontend (stw_create_context_attribs): there
++// are no profiles before OpenGL 3.2, and Mesa has no 3.1 with
++// GL_ARB_compatibility, so a context is the compatibility profile unless
++// core 3.2 or later is asked for. Mesa gives the newest version that
++// satisfies the request.
++static bool
++haiku_context_attribs(const _EGLContext *ctx, struct st_context_attribs *attribs)
++{
++   memset(attribs, 0, sizeof(*attribs));
++   hgl_get_st_visual(&attribs->visual, HGL_DOUBLE | HGL_DEPTH);
++   attribs->major = ctx->ClientMajorVersion;
++   attribs->minor = ctx->ClientMinorVersion;
++
++   switch (ctx->ClientAPI) {
++   case EGL_OPENGL_API:
++      if (ctx->Profile == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR &&
++          (attribs->major > 3 || (attribs->major == 3 && attribs->minor >= 2)))
++         attribs->profile = API_OPENGL_CORE;
++      else
++         attribs->profile = API_OPENGL_COMPAT;
++      break;
++   case EGL_OPENGL_ES_API:
++      attribs->profile = attribs->major >= 2 ? API_OPENGLES2 : API_OPENGLES;
++      break;
++   default:
++      return false;
++   }
++
++   if (ctx->Flags & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR)
++      attribs->flags |= ST_CONTEXT_FLAG_DEBUG;
++   if (ctx->Flags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)
++      attribs->flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
++   if (ctx->NoError)
++      attribs->flags |= ST_CONTEXT_FLAG_NO_ERROR;
++   return true;
++}
++
+ static _EGLContext *
+ haiku_create_context(_EGLDisplay *disp, _EGLConfig *conf,
+                      _EGLContext *share_list, const EGLint *attrib_list)
+@@ -436,8 +477,7 @@ haiku_create_context(_EGLDisplay *disp, _EGLConfig *conf,
+ 
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+-   struct st_visual visual;
+-   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_DEPTH);
++   struct st_context_attribs attribs;
+ 
+    struct haiku_egl_context *context =
+       (struct haiku_egl_context *)calloc(1, sizeof(*context));
+@@ -449,11 +489,20 @@ haiku_create_context(_EGLDisplay *disp, _EGLConfig *conf,
+    if (!_eglInitContext(&context->base, disp, conf, share_list, attrib_list))
+       goto cleanup;
+ 
++   if (!haiku_context_attribs(&context->base, &attribs)) {
++      _eglError(EGL_BAD_PARAMETER, "eglCreateContext");
++      goto cleanup;
++   }
++
+    context->ctx = hgl_create_context(
+-      hgl_dpy->disp, &visual,
++      hgl_dpy->disp, &attribs,
+       share_list == NULL ? NULL : haiku_egl_context(share_list)->ctx->st);
+-   if (context->ctx == NULL)
++   if (context->ctx == NULL) {
++      // The KHR_create_context error for a version, profile or flags the
++      // implementation does not offer.
++      _eglError(EGL_BAD_MATCH, "eglCreateContext");
+       goto cleanup;
++   }
+ 
+    return &context->base;
+ 
+diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
+index e9af7b6..f5d6a24 100644
+--- a/src/gallium/frontends/hgl/hgl.c
++++ b/src/gallium/frontends/hgl/hgl.c
+@@ -248,22 +248,14 @@ hgl_destroy_st_framebuffer(struct hgl_buffer *buffer)
+ 
+ 
+ struct hgl_context*
+-hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct st_context* shared)
++hgl_create_context(struct hgl_display *display, const struct st_context_attribs *attribs, struct st_context* shared)
+ {
+ 	struct hgl_context* context = CALLOC_STRUCT(hgl_context);
+ 	assert(context);
+ 	context->display = display;
+ 
+-	struct st_context_attribs attribs;
+-	memset(&attribs, 0, sizeof(attribs));
+-	attribs.options.force_glsl_extensions_warn = false;
+-	attribs.profile = API_OPENGL_COMPAT;
+-	attribs.visual = *visual;
+-	attribs.major = 1;
+-	attribs.minor = 0;
+-
+ 	enum st_context_error result;
+-	context->st = st_api_create_context(display->fscreen, &attribs, &result, shared);
++	context->st = st_api_create_context(display->fscreen, attribs, &result, shared);
+ 	if (context->st == NULL) {
+ 		FREE(context);
+ 		return NULL;
+diff --git a/src/gallium/frontends/hgl/hgl_context.h b/src/gallium/frontends/hgl/hgl_context.h
+index 711e63e..f8ae650 100644
+--- a/src/gallium/frontends/hgl/hgl_context.h
++++ b/src/gallium/frontends/hgl/hgl_context.h
+@@ -78,7 +78,8 @@ struct hgl_context
+ struct hgl_buffer* hgl_create_st_framebuffer(struct hgl_display *display, struct st_visual* visual, void *winsysContext);
+ void hgl_destroy_st_framebuffer(struct hgl_buffer *buffer);
+ 
+-struct hgl_context* hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct st_context* shared);
++struct st_context_attribs;
++struct hgl_context* hgl_create_context(struct hgl_display *display, const struct st_context_attribs *attribs, struct st_context* shared);
+ void hgl_destroy_context(struct hgl_context* context);
+ 
+ // hgl visual
+-- 
+2.47.3
+
+
+From 4f09d25c32f4115ffe2afa6848c24f9b73248918 Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Sat, 21 Nov 2026 19:02:45 +1000
+Subject: [PATCH 4/8] egl/haiku: Make the config describe the surfaces.
+
+The display's one config said RGBA8888 with a 24-bit depth buffer and
+no stencil, but every surface and context was made with
+HGL_DOUBLE | HGL_DEPTH: BGRX8888 (no alpha) with a Z24S8 depth-stencil
+buffer (hgl_get_st_visual). A program that read the config got the
+wrong answer both ways: GL_ALPHA_BITS was 0 on a config with 8 alpha
+bits, and GL_STENCIL_BITS 8 on one with none, so a program that asked
+for stencil found no config, and an OpenGL layer that builds its pixel
+formats from the configs (Wine's win32u does) offered none with
+stencil.
+
+Contexts and surfaces now share one visual, HAIKU_VISUAL, with
+HGL_ALPHA added, so the colour buffer is BGRA8888 and its 8 alpha bits
+are real, and the config says 8 stencil bits. The display target is a
+B_RGB32 BBitmap as before (hgl_winsys_convert_cs), so what a BGLView
+shows does not change.
+---
+ src/egl/drivers/haiku/egl_haiku.cpp | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index c16cb98..f268f49 100644
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -67,6 +67,12 @@ extern "C" {
+ 
+ _EGL_DRIVER_STANDARD_TYPECASTS(haiku_egl)
+ 
++// The one visual of every context and surface, which the display's one
++// config describes (haiku_add_configs_for_visuals): double-buffered BGRA8888
++// with a Z24S8 depth-stencil buffer (hgl_get_st_visual). Contexts and
++// surfaces must agree on it to be made current together.
++#define HAIKU_VISUAL (HGL_DOUBLE | HGL_DEPTH | HGL_ALPHA)
++
+ struct haiku_egl_display {
+    int ref_count;
+    struct hgl_display *disp;
+@@ -109,7 +115,7 @@ haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
+    }
+ 
+    struct st_visual visual;
+-   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_DEPTH);
++   hgl_get_st_visual(&visual, HAIKU_VISUAL);
+ 
+    wgl_surf->fb =
+       hgl_create_st_framebuffer(hgl_dpy->disp, &visual, native_window);
+@@ -151,7 +157,7 @@ haiku_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
+    }
+ 
+    struct st_visual visual;
+-   hgl_get_st_visual(&visual, HGL_DOUBLE | HGL_DEPTH);
++   hgl_get_st_visual(&visual, HAIKU_VISUAL);
+ 
+    wgl_surf->fb = hgl_create_st_framebuffer(hgl_dpy->disp, &visual, NULL);
+    if (!wgl_surf->fb) {
+@@ -282,7 +288,7 @@ haiku_add_configs_for_visuals(_EGLDisplay *disp)
+    conf->base.ConfigID = 1;
+    conf->base.BindToTextureRGB = EGL_FALSE;
+    conf->base.BindToTextureRGBA = EGL_FALSE;
+-   conf->base.StencilSize = 0;
++   conf->base.StencilSize = 8;
+    conf->base.TransparentType = EGL_NONE;
+    conf->base.NativeRenderable = EGL_TRUE; // Let's say yes
+    conf->base.NativeVisualID = 0;          // No visual
+@@ -290,7 +296,7 @@ haiku_add_configs_for_visuals(_EGLDisplay *disp)
+    conf->base.RenderableType = 0x8;
+    conf->base.SampleBuffers = 0; // TODO: How to get the right value ?
+    conf->base.Samples = conf->base.SampleBuffers == 0 ? 0 : 0;
+-   conf->base.DepthSize = 24; // TODO: How to get the right value ?
++   conf->base.DepthSize = 24;
+    conf->base.Level = 0;
+    conf->base.MaxPbufferWidth = _EGL_MAX_PBUFFER_WIDTH;
+    conf->base.MaxPbufferHeight = _EGL_MAX_PBUFFER_HEIGHT;
+@@ -441,7 +447,7 @@ static bool
+ haiku_context_attribs(const _EGLContext *ctx, struct st_context_attribs *attribs)
+ {
+    memset(attribs, 0, sizeof(*attribs));
+-   hgl_get_st_visual(&attribs->visual, HGL_DOUBLE | HGL_DEPTH);
++   hgl_get_st_visual(&attribs->visual, HAIKU_VISUAL);
+    attribs->major = ctx->ClientMajorVersion;
+    attribs->minor = ctx->ClientMinorVersion;
+ 
+-- 
+2.47.3
+
+
+From 19719b8682260885514f65dd607a4d1f60e3d485 Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Sat, 21 Nov 2026 19:02:59 +1000
+Subject: [PATCH 5/8] egl/haiku: Print the surface calls only in debug builds.
+
+haiku_create_window_surface, haiku_create_pixmap_surface and
+haiku_create_pbuffer_surface each printed their name to stdout, in
+release builds too: every BGLView program printed
+haiku_create_window_surface, and a program that draws through EGL a
+line for every surface it makes. They now use CALLED(), as the rest of
+the driver does, which prints (through TRACE) only in builds where
+MESA_DEBUG is true.
+---
+ src/egl/drivers/haiku/egl_haiku.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index f268f49..6825407 100644
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -100,7 +100,7 @@ static _EGLSurface *
+ haiku_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                             void *native_window, const EGLint *attrib_list)
+ {
+-   printf("haiku_create_window_surface\n");
++   CALLED();
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+    struct haiku_egl_surface *wgl_surf =
+@@ -134,7 +134,7 @@ static _EGLSurface *
+ haiku_create_pixmap_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                             void *native_pixmap, const EGLint *attrib_list)
+ {
+-   printf("haiku_create_pixmap_surface\n");
++   CALLED();
+    return NULL;
+ }
+ 
+@@ -142,7 +142,7 @@ static _EGLSurface *
+ haiku_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                              const EGLint *attrib_list)
+ {
+-   printf("haiku_create_pbuffer_surface\n");
++   CALLED();
+    struct haiku_egl_display *hgl_dpy = haiku_egl_display(disp);
+ 
+    struct haiku_egl_surface *wgl_surf =
+-- 
+2.47.3
+
+
+From 2ffacf5a8122b6569aba7703d89a7f9932e6f02c Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Tue, 24 Nov 2026 19:13:02 +1000
+Subject: [PATCH 6/8] vulkan: Add VK_RENKU_surface and the renku platform.
+
+The RenkuOS surface extension, as the patched Vulkan-Headers and
+Vulkan-Loader for RenkuOS have it: vkCreateSurfaceRENKU makes a surface
+for a BView. Nothing implements it yet.
+
+- src/vulkan/registry/vk.xml: the extension (number 735), its types and
+  the renku platform (VK_USE_PLATFORM_RENKU), the same additions as
+  Vulkan-Headers' registry gets, on Mesa's 1.4.363 copy.
+- include/vulkan: vulkan_renku.h as Vulkan-Docs' scripts generate it,
+  its include in vulkan.h, and VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU
+  (1000734000) in vulkan_core.h, where the generator puts it. The rest
+  of vulkan_core.h is left as it is: the 1.4.369 scripts order a few
+  typedefs differently from the ones that made these headers.
+- vk_icd.h: VK_ICD_WSI_PLATFORM_RENKU and VkIcdSurfaceRenku. Mesa's copy
+  lacked VK_ICD_WSI_PLATFORM_UBM, which Vulkan-Headers 1.4.369 has
+  before it, so that is added too: the loader hands surfaces over with
+  its value of the enum, and both must agree (17).
+- wsi_common.h: VK_ICD_WSI_PLATFORM_MAX covers the new value. It ended
+  at Metal, so a surface of a later platform would have indexed past
+  the per-platform tables.
+- With -Dplatforms=haiku (RenkuOS's compiler still names the system
+  that), VK_USE_PLATFORM_RENKU is defined for the Vulkan code.
+
+Khronos registered the RENKU tag and extension number 735 for
+VK_RENKU_surface (Vulkan-Docs #2859, merged 2026-11-25, with
+supported="disabled": the interface is not published there yet).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/vulkan/vk_icd.h       |  9 ++++++
+ include/vulkan/vulkan.h       |  5 +++
+ include/vulkan/vulkan_core.h  |  1 +
+ include/vulkan/vulkan_renku.h | 61 +++++++++++++++++++++++++++++++++++
+ src/vulkan/meson.build        |  3 ++
+ src/vulkan/registry/vk.xml    | 33 +++++++++++++++++++
+ src/vulkan/wsi/wsi_common.h   |  2 +-
+ 7 files changed, 113 insertions(+), 1 deletion(-)
+ create mode 100644 include/vulkan/vulkan_renku.h
+
+diff --git a/include/vulkan/vk_icd.h b/include/vulkan/vk_icd.h
+index 38b137c..47fbd60 100644
+--- a/include/vulkan/vk_icd.h
++++ b/include/vulkan/vk_icd.h
+@@ -118,6 +118,8 @@ typedef enum {
+     VK_ICD_WSI_PLATFORM_GGP,
+     VK_ICD_WSI_PLATFORM_SCREEN,
+     VK_ICD_WSI_PLATFORM_FUCHSIA,
++    VK_ICD_WSI_PLATFORM_UBM,
++    VK_ICD_WSI_PLATFORM_RENKU,
+ } VkIcdWsiPlatform;
+ 
+ typedef struct {
+@@ -242,3 +244,10 @@ typedef struct {
+   VkIcdSurfaceBase base;
+ } VkIcdSurfaceImagePipe;
+ #endif // VK_USE_PLATFORM_FUCHSIA
++
++#ifdef VK_USE_PLATFORM_RENKU
++typedef struct {
++    VkIcdSurfaceBase base;
++    BView *pView;
++} VkIcdSurfaceRenku;
++#endif // VK_USE_PLATFORM_RENKU
+diff --git a/include/vulkan/vulkan.h b/include/vulkan/vulkan.h
+index 934d9b1..411c08e 100644
+--- a/include/vulkan/vulkan.h
++++ b/include/vulkan/vulkan.h
+@@ -99,4 +99,9 @@
+ #include "vulkan_ohos.h"
+ #endif
+ 
++
++#ifdef VK_USE_PLATFORM_RENKU
++#include "vulkan_renku.h"
++#endif
++
+ #endif // VULKAN_H_
+diff --git a/include/vulkan/vulkan_core.h b/include/vulkan/vulkan_core.h
+index f13e7c8..a561b94 100644
+--- a/include/vulkan/vulkan_core.h
++++ b/include/vulkan/vulkan_core.h
+@@ -1498,6 +1498,7 @@ typedef enum VkStructureType {
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_ALLOCATION_ALIGNMENT_FEATURES_VALVE = 1000709000,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_ALLOCATION_ALIGNMENT_PROPERTIES_VALVE = 1000709001,
+     VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_ALIGNMENT_ALLOCATE_INFO_VALVE = 1000709002,
++    VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU = 1000734000,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES,
+   // VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT is a legacy alias
+diff --git a/include/vulkan/vulkan_renku.h b/include/vulkan/vulkan_renku.h
+new file mode 100644
+index 0000000..2b2f213
+--- /dev/null
++++ b/include/vulkan/vulkan_renku.h
+@@ -0,0 +1,61 @@
++#ifndef VULKAN_RENKU_H_
++#define VULKAN_RENKU_H_ 1
++
++/*
++** Copyright 2015-2026 The Khronos Group Inc.
++**
++** SPDX-License-Identifier: Apache-2.0 OR MIT
++*/
++
++/*
++** This header is generated from the Khronos Vulkan XML API Registry.
++**
++*/
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++
++
++// VK_RENKU_surface is a preprocessor guard. Do not pass it to API calls.
++#define VK_RENKU_surface 1
++
++#ifdef __cplusplus
++class BView;
++#else
++typedef struct BView BView;
++#endif
++
++#define VK_RENKU_SURFACE_SPEC_VERSION     1
++#define VK_RENKU_SURFACE_EXTENSION_NAME   "VK_RENKU_surface"
++
++typedef VkFlags VkSurfaceCreateFlagsRENKU;
++
++typedef struct VkSurfaceCreateInfoRENKU {
++    VkStructureType              sType;
++    const void*                  pNext;
++    VkSurfaceCreateFlagsRENKU    flags;
++    BView*                       pView;
++} VkSurfaceCreateInfoRENKU;
++
++
++typedef VkResult (VKAPI_PTR *PFN_vkCreateSurfaceRENKU)(VkInstance instance, const VkSurfaceCreateInfoRENKU* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
++
++#ifndef VK_NO_PROTOTYPES
++
++#ifndef VK_ONLY_EXPORTED_PROTOTYPES
++VKAPI_ATTR VkResult VKAPI_CALL vkCreateSurfaceRENKU(
++    VkInstance                                  instance,
++    const VkSurfaceCreateInfoRENKU*             pCreateInfo,
++    const VkAllocationCallbacks*                pAllocator,
++    VkSurfaceKHR*                               pSurface);
++#endif
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index a24d9d3..08e3164 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -68,6 +68,9 @@ endif
+ if with_platform_windows
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_WIN32_KHR'
+ endif
++if with_platform_haiku
++  vulkan_wsi_list += '-DVK_USE_PLATFORM_RENKU'
++endif
+ if with_platform_macos
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_MACOS_MVK'
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_METAL_EXT'
+diff --git a/src/vulkan/registry/vk.xml b/src/vulkan/registry/vk.xml
+index ab31965..5f901dd 100644
+--- a/src/vulkan/registry/vk.xml
++++ b/src/vulkan/registry/vk.xml
+@@ -36,6 +36,7 @@ branch of the member gitlab server.
+         <platform name="provisional" protect="VK_ENABLE_BETA_EXTENSIONS" comment="Enable declarations for beta/provisional extensions" />
+         <platform name="screen" protect="VK_USE_PLATFORM_SCREEN_QNX" comment="QNX Screen Graphics Subsystem" />
+         <platform name="ohos" protect="VK_USE_PLATFORM_OHOS" comment="Open Harmony OS" />
++        <platform name="renku" protect="VK_USE_PLATFORM_RENKU" comment="RenkuOS" />
+     </platforms>
+ 
+     <tags comment="Vulkan vendor/author tags for extensions and layers">
+@@ -83,6 +84,7 @@ branch of the member gitlab server.
+         <tag name="MTK" author="Mediatek, Inc." contact="Samuel Huang @shengwenhuang" />
+         <tag name="OPENXR" author="OpenXR Working Group" contact="Ron Bessems @rbessems" />
+         <tag name="MWS" author="Mercurius Window System" contact="Christopher Ross, chris@tebibyte.org, mercurius@tebibyte.org" />
++        <tag name="RENKU" author="RenkuOS" contact="Kevin Adams @KevinAdams05, kevinadams05@gmail.com" />
+     </tags>
+ 
+     <types comment="Vulkan type definitions">
+@@ -291,6 +293,12 @@ typedef void* <name>MTLSharedEvent_id</name>;
+         <type category="basetype">struct <name>OHBufferHandle</name>;</type>
+         <type category="basetype">struct <name>OH_NativeBuffer</name>;</type>
+ 
++        <type category="basetype">#ifdef __cplusplus
++class BView;
++#else
++typedef struct BView <name>BView</name>;
++#endif</type>
++
+             <comment>Basic C types, pulled in via vk_platform.h</comment>
+         <type requires="vk_platform" name="void" />
+         <type requires="vk_platform" name="char" />
+@@ -538,6 +546,7 @@ typedef void* <name>MTLSharedEvent_id</name>;
+         <type requires="VkTileShadingRenderPassFlagBitsQCOM" category="bitmask">typedef <type>VkFlags</type> <name>VkTileShadingRenderPassFlagsQCOM</name>;</type>
+         <type bitvalues="VkPhysicalDeviceSchedulingControlsFlagBitsARM" category="bitmask">typedef <type>VkFlags64</type> <name>VkPhysicalDeviceSchedulingControlsFlagsARM</name>;</type>
+         <type category="bitmask">typedef <type>VkFlags</type> <name>VkSurfaceCreateFlagsOHOS</name>;</type>
++        <type category="bitmask">typedef <type>VkFlags</type> <name>VkSurfaceCreateFlagsRENKU</name>;</type>
+         <type requires="VkPresentStageFlagBitsEXT" category="bitmask">typedef <type>VkFlags</type> <name>VkPresentStageFlagsEXT</name>;</type>
+         <type requires="VkPastPresentationTimingFlagBitsEXT" category="bitmask">typedef <type>VkFlags</type> <name>VkPastPresentationTimingFlagsEXT</name>;</type>
+         <type requires="VkPresentTimingInfoFlagBitsEXT" category="bitmask">typedef <type>VkFlags</type> <name>VkPresentTimingInfoFlagsEXT</name>;</type>
+@@ -11347,6 +11356,12 @@ typedef void* <name>MTLSharedEvent_id</name>;
+             <member optional="true"><type>VkSurfaceCreateFlagsOHOS</type> <name>flags</name></member>
+             <member noautovalidity="true"><type>OHNativeWindow</type>*    <name>window</name></member>
+         </type>
++        <type category="struct" name="VkSurfaceCreateInfoRENKU">
++            <member values="VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU"><type>VkStructureType</type> <name>sType</name></member>
++            <member optional="true">const <type>void</type>*                                    <name>pNext</name></member>
++            <member optional="true"><type>VkSurfaceCreateFlagsRENKU</type> <name>flags</name></member>
++            <member noautovalidity="true"><type>BView</type>*             <name>pView</name></member>
++        </type>
+         <type category="struct" name="VkPhysicalDeviceDataGraphFeaturesARM" structextends="VkPhysicalDeviceFeatures2,VkDeviceCreateInfo">
+             <member values="VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DATA_GRAPH_FEATURES_ARM"><type>VkStructureType</type> <name>sType</name></member>
+             <member optional="true"><type>void</type>* <name>pNext</name></member>
+@@ -15895,6 +15910,13 @@ endif::VK_KHR_internally_synchronized_queues[]
+             <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
+             <param><type>VkSurfaceKHR</type>* <name>pSurface</name></param>
+         </command>
++        <command successcodes="VK_SUCCESS" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_SURFACE_LOST_KHR,VK_ERROR_UNKNOWN,VK_ERROR_VALIDATION_FAILED">
++            <proto><type>VkResult</type> <name>vkCreateSurfaceRENKU</name></proto>
++            <param><type>VkInstance</type> <name>instance</name></param>
++            <param>const <type>VkSurfaceCreateInfoRENKU</type>* <name>pCreateInfo</name></param>
++            <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
++            <param><type>VkSurfaceKHR</type>* <name>pSurface</name></param>
++        </command>
+         <command successcodes="VK_SUCCESS,VK_INCOMPLETE" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_OUT_OF_DEVICE_MEMORY,VK_ERROR_UNKNOWN,VK_ERROR_VALIDATION_FAILED">
+             <proto><type>VkResult</type> <name>vkGetPhysicalDeviceDisplayPropertiesKHR</name></proto>
+             <param><type>VkPhysicalDevice</type> <name>physicalDevice</name></param>
+@@ -32597,6 +32619,17 @@ endif::VK_KHR_internally_synchronized_queues[]
+                 <enum value="&quot;VK_KHR_extension_716&quot;" name="VK_KHR_EXTENSION_716_EXTENSION_NAME" />
+             </require>
+         </extension>
++        <extension name="VK_RENKU_surface" number="735" type="instance" depends="VK_KHR_surface" platform="renku" author="RENKU" contact="Kevin Adams @KevinAdams05" supported="vulkan" nofeatures="true">
++            <require>
++                <enum value="1" name="VK_RENKU_SURFACE_SPEC_VERSION" />
++                <enum value="&quot;VK_RENKU_surface&quot;" name="VK_RENKU_SURFACE_EXTENSION_NAME" />
++                <enum offset="0" extends="VkStructureType" name="VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU" />
++                <type name="VkSurfaceCreateFlagsRENKU" />
++                <type name="VkSurfaceCreateInfoRENKU" />
++                <type name="BView" />
++                <command name="vkCreateSurfaceRENKU" />
++            </require>
++        </extension>
+     </extensions>
+     <formats>
+         <format name="VK_FORMAT_R4G4_UNORM_PACK8" class="8-bit" blockSize="1" texelsPerBlock="1" packed="8">
+diff --git a/src/vulkan/wsi/wsi_common.h b/src/vulkan/wsi/wsi_common.h
+index cfb921d..8d7a399 100644
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -52,7 +52,7 @@ struct vk_queue;
+ 
+ struct driOptionCache;
+ 
+-#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_METAL + 1)
++#define VK_ICD_WSI_PLATFORM_MAX (VK_ICD_WSI_PLATFORM_RENKU + 1)
+ 
+ struct wsi_device {
+    /* Allocator for the instance */
+-- 
+2.47.3
+
+
+From a8f660a76b033e3aaa2b58e2706d45b3ad4d47ec Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Tue, 24 Nov 2026 19:22:07 +1000
+Subject: [PATCH 7/8] vulkan/wsi: Add a RenkuOS back end (VK_RENKU_surface).
+
+Presentation into a BView. The swapchain renders into Mesa's CPU images
+(wsi_configure_cpu_image), as the headless and Win32 software back
+ends do, so it works with any driver: lavapipe maps its images, a GPU
+driver would blit into a host buffer. A present copies the image into
+a BBitmap (B_RGB32) and makes it the view's view bitmap
+(BView::SetViewBitmap). app_server keeps a reference to that bitmap
+and redraws the view from it by itself, so the last frame comes back
+after the window is covered, minimized or moved, with no present and
+no help from the application. Two bitmaps per swapchain: the one on
+screen is never written, and BView::Sync() after SetViewBitmap()
+makes sure app_server has let go of the other before it is reused.
+
+- Surface: the view's size (BView::Bounds, under the window lock) is
+  the current extent. A size that cannot be read (the window busy for
+  100 ms, the view moving between windows as the lock is taken) is
+  reported as unknown (UINT32_MAX), never as a lost surface: the view
+  outlives the surface. Formats B8G8R8A8_UNORM and _SRGB, the ones
+  B_RGB32 holds without a conversion; opaque only. At least two
+  images; the application gets an image back as soon as its present
+  has copied it out.
+- Present modes FIFO, IMMEDIATE and MAILBOX. FIFO keeps presents one
+  refresh interval apart, the interval read from the main screen's
+  display mode (60 Hz if the mode has no timing).
+- A present after the view has changed size returns
+  VK_SUBOPTIMAL_KHR, so the application makes a new swapchain.
+- Every call on the view locks its window with a 100 ms timeout, as
+  the window's thread may be waiting for the thread that presents. A
+  present that cannot get the lock drops its frame and succeeds.
+- Destroying a swapchain leaves its last frame on the view (app_server
+  holds the bitmap), so a recreated swapchain shows no gap; destroying
+  the surface clears the view bitmap.
+- wsi_common.c: init, finish and surface destruction for the platform;
+  meson: the back end is built with -Dplatforms=haiku, and libbe goes
+  with idep_vulkan_wsi, since a static library's dependencies do not
+  reach a link_whole user.
+
+The view must outlive the surface, and the application should not draw
+into it while it presents. Not done: present regions (the whole image
+is copied), the present-timing extensions, colour spaces other than
+sRGB, and anything faster than a copy (a shared buffer, an overlay).
+FIFO is timed, not tied to the display's vertical retrace.
+
+Tested on the build VM (nightly 95) with the Wine port's
+vksurfaceprobe, a native window with a plain BView, on lavapipe with
+the patched loader: 34/34 checks three times from the dev trees and
+three times from the packages, reading the pixels back
+from the screen (colours and orientation, FIFO 60 presents in 0.985 s
+at 60 Hz, IMMEDIATE unpaced, a busy window lock dropping one frame
+after 101 ms, the frame back after minimize and restore, resize with
+VK_SUBOPTIMAL_KHR and a recreated swapchain, teardown).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/vulkan/wsi/meson.build          |   7 +-
+ src/vulkan/wsi/wsi_common.c         |  15 +
+ src/vulkan/wsi/wsi_common_private.h |   7 +
+ src/vulkan/wsi/wsi_common_renku.cpp | 710 ++++++++++++++++++++++++++++
+ 4 files changed, 738 insertions(+), 1 deletion(-)
+ create mode 100644 src/vulkan/wsi/wsi_common_renku.cpp
+
+diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
+index bc23ebe..05ae534 100644
+--- a/src/vulkan/wsi/meson.build
++++ b/src/vulkan/wsi/meson.build
+@@ -38,6 +38,11 @@ if with_platform_macos
+   files_vulkan_wsi += files('wsi_common_metal.c', 'wsi_common_metal_layer.m')
+ endif
+ 
++if with_platform_haiku
++  files_vulkan_wsi += files('wsi_common_renku.cpp')
++  platform_deps += cpp.find_library('be')
++endif
++
+ if system_has_kms_drm and not with_platform_android
+   files_vulkan_wsi += files('wsi_common_display.c')
+ endif
+@@ -88,7 +93,7 @@ else
+     # our weak function overloads may not resolve properly.
+     link_whole : libvulkan_wsi,
+     dependencies : [
+-      idep_vulkan_wsi_headers, dep_libudev
++      idep_vulkan_wsi_headers, dep_libudev, platform_deps
+     ]
+   )
+ endif
+diff --git a/src/vulkan/wsi/wsi_common.c b/src/vulkan/wsi/wsi_common.c
+index f40f078..335af77 100644
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -269,6 +269,12 @@ wsi_device_init(struct wsi_device *wsi,
+       goto fail;
+ #endif
+ 
++#ifdef VK_USE_PLATFORM_RENKU
++   result = wsi_renku_init_wsi(wsi, alloc, pdevice);
++   if (result != VK_SUCCESS)
++      goto fail;
++#endif
++
+ #ifndef VK_USE_PLATFORM_WIN32_KHR
+    result = wsi_headless_init_wsi(wsi, alloc, pdevice);
+    if (result != VK_SUCCESS)
+@@ -358,6 +364,9 @@ wsi_device_finish(struct wsi_device *wsi,
+ #if defined(VK_USE_PLATFORM_METAL_EXT)
+    wsi_metal_finish_wsi(wsi, alloc);
+ #endif
++#ifdef VK_USE_PLATFORM_RENKU
++   wsi_renku_finish_wsi(wsi, alloc);
++#endif
+ }
+ 
+ VKAPI_ATTR void VKAPI_CALL
+@@ -383,6 +392,12 @@ wsi_DestroySurfaceKHR(VkInstance _instance,
+       return;
+    }
+ #endif
++#ifdef VK_USE_PLATFORM_RENKU
++   if (surface->platform == VK_ICD_WSI_PLATFORM_RENKU) {
++      wsi_renku_surface_destroy(surface, _instance, pAllocator);
++      return;
++   }
++#endif
+ 
+    vk_free2(&instance->alloc, pAllocator, surface);
+ }
+diff --git a/src/vulkan/wsi/wsi_common_private.h b/src/vulkan/wsi/wsi_common_private.h
+index 3d2cd7d..c20f029 100644
+--- a/src/vulkan/wsi/wsi_common_private.h
++++ b/src/vulkan/wsi/wsi_common_private.h
+@@ -555,6 +555,13 @@ VkResult wsi_win32_init_wsi(struct wsi_device *wsi_device,
+                          VkPhysicalDevice physical_device);
+ void wsi_win32_finish_wsi(struct wsi_device *wsi_device,
+                        const VkAllocationCallbacks *alloc);
++VkResult wsi_renku_init_wsi(struct wsi_device *wsi_device,
++                           const VkAllocationCallbacks *alloc,
++                           VkPhysicalDevice physical_device);
++void wsi_renku_finish_wsi(struct wsi_device *wsi_device,
++                          const VkAllocationCallbacks *alloc);
++void wsi_renku_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
++                               const VkAllocationCallbacks *pAllocator);
+ VkResult wsi_metal_init_wsi(struct wsi_device *wsi_device,
+                            const VkAllocationCallbacks *alloc,
+                            VkPhysicalDevice physical_device);
+diff --git a/src/vulkan/wsi/wsi_common_renku.cpp b/src/vulkan/wsi/wsi_common_renku.cpp
+new file mode 100644
+index 0000000..79aac38
+--- /dev/null
++++ b/src/vulkan/wsi/wsi_common_renku.cpp
+@@ -0,0 +1,710 @@
++/*
++ * Copyright 2026 rations
++ * SPDX-License-Identifier: MIT
++ */
++
++/** VK_RENKU_surface: Vulkan presentation into a BView on RenkuOS.
++ *
++ * The swapchain renders into Mesa's CPU images (wsi_configure_cpu_image),
++ * as the headless and Win32 software back ends do, so it works with any
++ * driver: lavapipe maps its images, and a GPU driver blits into a host
++ * buffer. A present copies the finished image into a BBitmap and makes that
++ * bitmap the view's view bitmap (BView::SetViewBitmap). app_server keeps a
++ * reference to the bitmap and redraws the view from it by itself whenever
++ * the window is exposed, so the last frame stays on screen with no help
++ * from the application. Each swapchain alternates between two bitmaps: the
++ * one on screen is never written.
++ *
++ * Calls on the view need its window locked. Presents and size queries lock
++ * it with a timeout, because the window's thread may itself be waiting for
++ * the thread that presents. A present that cannot get the lock in time is
++ * dropped, not failed. The view must outlive the surface, and the
++ * application should not draw into it while it is presenting.
++ */
++
++#include <Bitmap.h>
++#include <Looper.h>
++#include <OS.h>
++#include <Screen.h>
++#include <View.h>
++#include <Window.h>
++
++#include <new>
++
++#include <assert.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "util/cnd_monotonic.h"
++#include "util/macros.h"
++#include "util/os_time.h"
++#include "util/timespec.h"
++#include "vk_instance.h"
++#include "vk_physical_device.h"
++#include "vk_util.h"
++#include "wsi_common_entrypoints.h"
++#include "wsi_common_private.h"
++
++/* How long a present, or a size query, waits for the view's window lock. */
++#define WSI_RENKU_LOCK_TIMEOUT 100000 /* microseconds */
++
++struct wsi_renku {
++   struct wsi_interface base;
++};
++
++struct wsi_renku_image {
++   struct wsi_image base;
++   bool acquired; /* by the application, not yet presented or released */
++};
++
++struct wsi_renku_swapchain {
++   struct wsi_swapchain base;
++   BView *view;
++   VkExtent2D extent;
++
++   mtx_t lock; /* the images' acquired flags */
++   struct u_cnd_monotonic cond;
++
++   /* Presents come from one queue at a time (external synchronization). */
++   BBitmap *bitmaps[2];
++   unsigned next_bitmap;
++   bigtime_t frame_time;     /* FIFO: one refresh interval */
++   bigtime_t next_frame;     /* FIFO: when the next present may show */
++
++   struct wsi_renku_image images[0];
++};
++
++/* The size of the view, in pixels, or false if it cannot be known right now:
++ * its window is busy for too long, or the view keeps moving between windows.
++ * A view that is not in a window has no lock to take, and is read as it is.
++ * The view outlives the surface, so the surface is never lost. */
++static bool
++wsi_renku_view_size(BView *view, VkExtent2D *extent)
++{
++   BRect bounds;
++   bool known = false;
++
++   /* LockLooperWithTimeout gives B_MISMATCHED_VALUES when the view moved to
++    * another window while it waited, and B_BAD_VALUE when it has no window,
++    * or its window went: then look again. */
++   for (int attempt = 0; attempt < 3 && !known; attempt++) {
++      status_t status = view->LockLooperWithTimeout(WSI_RENKU_LOCK_TIMEOUT);
++
++      if (status == B_OK) {
++         bounds = view->Bounds();
++         view->UnlockLooper();
++         known = true;
++      } else if (status == B_BAD_VALUE && view->Looper() == NULL) {
++         bounds = view->Bounds();
++         known = true;
++      } else if (status != B_MISMATCHED_VALUES && status != B_BAD_VALUE) {
++         break; /* B_TIMED_OUT: the window is busy */
++      }
++   }
++   if (!known)
++      return false;
++
++   extent->width = MAX2(bounds.IntegerWidth() + 1, 0);
++   extent->height = MAX2(bounds.IntegerHeight() + 1, 0);
++   return true;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++wsi_CreateSurfaceRENKU(VkInstance _instance,
++                       const VkSurfaceCreateInfoRENKU *pCreateInfo,
++                       const VkAllocationCallbacks *pAllocator,
++                       VkSurfaceKHR *pSurface)
++{
++   VK_FROM_HANDLE(vk_instance, instance, _instance);
++   VkIcdSurfaceRenku *surface;
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU);
++
++   if (pCreateInfo->pView == NULL)
++      return VK_ERROR_SURFACE_LOST_KHR;
++
++   surface = (VkIcdSurfaceRenku *)vk_zalloc2(&instance->alloc, pAllocator,
++                                             sizeof(*surface), 8,
++                                             VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (surface == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   surface->base.platform = VK_ICD_WSI_PLATFORM_RENKU;
++   surface->pView = pCreateInfo->pView;
++
++   *pSurface = VkIcdSurfaceBase_to_handle(&surface->base);
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_renku_surface_get_support(VkIcdSurfaceBase *surface,
++                              struct wsi_device *wsi_device,
++                              uint32_t queueFamilyIndex,
++                              VkBool32 *pSupported)
++{
++   *pSupported = true;
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_renku_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
++                                   struct wsi_device *wsi_device,
++                                   VkSurfaceCapabilities2KHR *caps)
++{
++   VkIcdSurfaceRenku *surface = (VkIcdSurfaceRenku *)icd_surface;
++   VkExtent2D extent;
++
++   if (!wsi_renku_view_size(surface->pView, &extent)) {
++      /* Its size is not known right now. */
++      extent.width = extent.height = UINT32_MAX;
++   }
++
++   /* A present copies the image out before it returns, so two images are
++    * enough for any present mode. */
++   caps->surfaceCapabilities.minImageCount = 2;
++   caps->surfaceCapabilities.maxImageCount = 0; /* no real maximum */
++
++   caps->surfaceCapabilities.currentExtent = extent;
++   caps->surfaceCapabilities.minImageExtent = { 1u, 1u };
++   caps->surfaceCapabilities.maxImageExtent = {
++      wsi_device->maxImageDimension2D,
++      wsi_device->maxImageDimension2D,
++   };
++
++   caps->surfaceCapabilities.supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++   caps->surfaceCapabilities.currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++   caps->surfaceCapabilities.maxImageArrayLayers = 1;
++
++   /* B_RGB32 has no alpha: the view is opaque. */
++   caps->surfaceCapabilities.supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
++
++   VkImageUsageFlags image_usage = wsi_caps_get_image_usage();
++
++   VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
++   if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
++      image_usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
++
++   VkImageUsageFlags2CreateInfoKHR *usage2 = (VkImageUsageFlags2CreateInfoKHR *)
++      vk_find_struct(caps->pNext, IMAGE_USAGE_FLAGS_2_CREATE_INFO_KHR);
++   if (usage2)
++      usage2->usage = image_usage;
++   else
++      caps->surfaceCapabilities.supportedUsageFlags = image_usage;
++
++   return VK_SUCCESS;
++}
++
++static VkResult
++wsi_renku_surface_get_capabilities2(VkIcdSurfaceBase *surface,
++                                    struct wsi_device *wsi_device,
++                                    const void *info_next,
++                                    VkSurfaceCapabilities2KHR *caps)
++{
++   assert(caps->sType == VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR);
++
++   const VkSurfacePresentModeKHR *present_mode = (const VkSurfacePresentModeKHR *)
++      vk_find_struct_const(info_next, SURFACE_PRESENT_MODE_KHR);
++
++   VkResult result = wsi_renku_surface_get_capabilities(surface, wsi_device, caps);
++
++   vk_foreach_struct(sType, ext, caps->pNext) {
++      switch (sType) {
++      case VK_STRUCTURE_TYPE_SURFACE_PROTECTED_CAPABILITIES_KHR: {
++         VkSurfaceProtectedCapabilitiesKHR *protected_cap = (VkSurfaceProtectedCapabilitiesKHR *)ext;
++         protected_cap->supportsProtected = VK_FALSE;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_KHR: {
++         /* Unsupported */
++         VkSurfacePresentScalingCapabilitiesKHR *scaling = (VkSurfacePresentScalingCapabilitiesKHR *)ext;
++         scaling->supportedPresentScaling = 0;
++         scaling->supportedPresentGravityX = 0;
++         scaling->supportedPresentGravityY = 0;
++         scaling->minScaledImageExtent = caps->surfaceCapabilities.minImageExtent;
++         scaling->maxScaledImageExtent = caps->surfaceCapabilities.maxImageExtent;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_KHR: {
++         /* Unsupported */
++         VkSurfacePresentModeCompatibilityKHR *compat = (VkSurfacePresentModeCompatibilityKHR *)ext;
++         if (compat->pPresentModes == NULL) {
++            if (!present_mode) {
++               wsi_common_vk_warn_once("Use of VkSurfacePresentModeCompatibilityKHR "
++                                       "without a VkSurfacePresentModeKHR set. This is an "
++                                       "application bug.\n");
++            }
++            compat->presentModeCount = 1;
++         } else if (compat->presentModeCount) {
++            assert(present_mode);
++            compat->presentModeCount = 1;
++            compat->pPresentModes[0] = present_mode->presentMode;
++         }
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT: {
++         VkPresentTimingSurfaceCapabilitiesEXT *wait = (VkPresentTimingSurfaceCapabilitiesEXT *)ext;
++         wait->presentStageQueries = 0;
++         wait->presentTimingSupported = VK_FALSE;
++         wait->presentAtAbsoluteTimeSupported = VK_FALSE;
++         wait->presentAtRelativeTimeSupported = VK_FALSE;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SWAPCHAIN_FLAGS_SURFACE_CAPABILITIES_EXT: {
++         VkSwapchainFlagsSurfaceCapabilitiesEXT *surface_caps = (VkSwapchainFlagsSurfaceCapabilitiesEXT *)ext;
++         VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
++
++         if (pdevice->supported_extensions.EXT_multisampled_render_to_swapchain)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT;
++         if (pdevice->supported_extensions.KHR_bind_memory2)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT_KHR;
++         if (pdevice->supported_extensions.KHR_present_id2)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
++         if (pdevice->supported_extensions.KHR_present_wait2)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR;
++         if (pdevice->supported_extensions.KHR_swapchain_mutable_format)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
++         if (pdevice->supported_extensions.EXT_present_timing)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT;
++         if (pdevice->supported_extensions.KHR_swapchain_maintenance1 ||
++             pdevice->supported_extensions.EXT_swapchain_maintenance1)
++            surface_caps->swapchainSupportedFlags |= VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR: {
++         VkSurfaceCapabilitiesPresentId2KHR *pid2 = (VkSurfaceCapabilitiesPresentId2KHR *)ext;
++         pid2->presentId2Supported = VK_TRUE;
++         break;
++      }
++
++      case VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR: {
++         VkSurfaceCapabilitiesPresentWait2KHR *pwait2 = (VkSurfaceCapabilitiesPresentWait2KHR *)ext;
++         pwait2->presentWait2Supported = VK_TRUE;
++         break;
++      }
++
++      default:
++         /* Ignored */
++         break;
++      }
++   }
++
++   return result;
++}
++
++/* B_RGB32 is B, G, R, X in memory, so only BGRA formats show the right
++ * colours without a conversion. */
++static const VkFormat available_surface_formats[] = {
++   VK_FORMAT_B8G8R8A8_UNORM,
++   VK_FORMAT_B8G8R8A8_SRGB,
++};
++
++static VkResult
++wsi_renku_surface_get_formats(VkIcdSurfaceBase *icd_surface,
++                              struct wsi_device *wsi_device,
++                              uint32_t *pSurfaceFormatCount,
++                              VkSurfaceFormatKHR *pSurfaceFormats)
++{
++   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out, pSurfaceFormats, pSurfaceFormatCount);
++
++   for (unsigned i = 0; i < ARRAY_SIZE(available_surface_formats); i++) {
++      vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
++         f->format = available_surface_formats[i];
++         f->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static VkResult
++wsi_renku_surface_get_formats2(VkIcdSurfaceBase *icd_surface,
++                               struct wsi_device *wsi_device,
++                               const void *info_next,
++                               uint32_t *pSurfaceFormatCount,
++                               VkSurfaceFormat2KHR *pSurfaceFormats)
++{
++   VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out, pSurfaceFormats, pSurfaceFormatCount);
++
++   for (unsigned i = 0; i < ARRAY_SIZE(available_surface_formats); i++) {
++      vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
++         assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
++         f->surfaceFormat.format = available_surface_formats[i];
++         f->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++      }
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static const VkPresentModeKHR present_modes[] = {
++   VK_PRESENT_MODE_FIFO_KHR,
++   VK_PRESENT_MODE_IMMEDIATE_KHR,
++   VK_PRESENT_MODE_MAILBOX_KHR,
++};
++
++static VkResult
++wsi_renku_surface_get_present_modes(VkIcdSurfaceBase *surface,
++                                    struct wsi_device *wsi_device,
++                                    uint32_t *pPresentModeCount,
++                                    VkPresentModeKHR *pPresentModes)
++{
++   if (pPresentModes == NULL) {
++      *pPresentModeCount = ARRAY_SIZE(present_modes);
++      return VK_SUCCESS;
++   }
++
++   *pPresentModeCount = MIN2(*pPresentModeCount, ARRAY_SIZE(present_modes));
++   typed_memcpy(pPresentModes, present_modes, *pPresentModeCount);
++
++   return *pPresentModeCount < ARRAY_SIZE(present_modes) ? VK_INCOMPLETE : VK_SUCCESS;
++}
++
++static VkResult
++wsi_renku_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
++                                         struct wsi_device *wsi_device,
++                                         uint32_t *pRectCount,
++                                         VkRect2D *pRects)
++{
++   VkIcdSurfaceRenku *surface = (VkIcdSurfaceRenku *)icd_surface;
++   VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
++   VkExtent2D extent;
++
++   if (!wsi_renku_view_size(surface->pView, &extent))
++      extent.width = extent.height = UINT32_MAX;
++
++   vk_outarray_append_typed(VkRect2D, &out, rect) {
++      rect->offset = { 0, 0 };
++      rect->extent = extent;
++   }
++
++   return vk_outarray_status(&out);
++}
++
++static struct wsi_image *
++wsi_renku_swapchain_get_wsi_image(struct wsi_swapchain *wsi_chain,
++                                  uint32_t image_index)
++{
++   struct wsi_renku_swapchain *chain = (struct wsi_renku_swapchain *)wsi_chain;
++   return &chain->images[image_index].base;
++}
++
++static void
++wsi_renku_release_image(struct wsi_renku_swapchain *chain, uint32_t index)
++{
++   mtx_lock(&chain->lock);
++   chain->images[index].acquired = false;
++   u_cnd_monotonic_broadcast(&chain->cond);
++   mtx_unlock(&chain->lock);
++}
++
++static VkResult
++wsi_renku_swapchain_release_images(struct wsi_swapchain *wsi_chain,
++                                   uint32_t count, const uint32_t *indices)
++{
++   struct wsi_renku_swapchain *chain = (struct wsi_renku_swapchain *)wsi_chain;
++
++   for (uint32_t i = 0; i < count; i++) {
++      assert(indices[i] < chain->base.image_count);
++      wsi_renku_release_image(chain, indices[i]);
++   }
++   return VK_SUCCESS;
++}
++
++static bool
++wsi_renku_find_idle_image(struct wsi_renku_swapchain *chain, uint32_t *index)
++{
++   for (uint32_t i = 0; i < chain->base.image_count; i++) {
++      if (!chain->images[i].acquired) {
++         chain->images[i].acquired = true;
++         *index = i;
++         return true;
++      }
++   }
++   return false;
++}
++
++static VkResult
++wsi_renku_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
++                                       const VkAcquireNextImageInfoKHR *info,
++                                       uint32_t *image_index)
++{
++   struct wsi_renku_swapchain *chain = (struct wsi_renku_swapchain *)wsi_chain;
++   VkResult result = VK_SUCCESS;
++
++   mtx_lock(&chain->lock);
++   if (!wsi_renku_find_idle_image(chain, image_index)) {
++      if (info->timeout == 0) {
++         result = VK_NOT_READY;
++      } else {
++         struct timespec abs_timeout;
++         timespec_from_nsec(&abs_timeout, os_time_get_absolute_timeout(info->timeout));
++         do {
++            int ret = u_cnd_monotonic_timedwait(&chain->cond, &chain->lock, &abs_timeout);
++            if (ret == thrd_timedout) {
++               result = VK_TIMEOUT;
++               break;
++            } else if (ret != thrd_success) {
++               result = VK_ERROR_OUT_OF_DATE_KHR;
++               break;
++            }
++         } while (!wsi_renku_find_idle_image(chain, image_index));
++      }
++   }
++   mtx_unlock(&chain->lock);
++   return result;
++}
++
++/* Copies an image into the bitmap that is not on screen. */
++static BBitmap *
++wsi_renku_fill_bitmap(struct wsi_renku_swapchain *chain, struct wsi_renku_image *image)
++{
++   BBitmap *bitmap = chain->bitmaps[chain->next_bitmap];
++   const uint8_t *src = (const uint8_t *)image->base.cpu_map;
++   uint8_t *dst = (uint8_t *)bitmap->Bits();
++   const size_t src_pitch = image->base.row_pitches[0];
++   const size_t dst_pitch = bitmap->BytesPerRow();
++   const size_t row = (size_t)chain->extent.width * 4;
++
++   for (uint32_t y = 0; y < chain->extent.height; y++)
++      memcpy(dst + y * dst_pitch, src + y * src_pitch, row);
++
++   return bitmap;
++}
++
++static VkResult
++wsi_renku_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
++                                  uint32_t image_index,
++                                  uint64_t present_id,
++                                  const VkPresentRegionKHR *damage)
++{
++   struct wsi_renku_swapchain *chain = (struct wsi_renku_swapchain *)wsi_chain;
++   struct wsi_renku_image *image = &chain->images[image_index];
++   VkResult result = VK_SUCCESS;
++
++   assert(image_index < chain->base.image_count);
++
++   BBitmap *bitmap = wsi_renku_fill_bitmap(chain, image);
++
++   /* The image is copied out: the application may have it back. */
++   wsi_renku_release_image(chain, image_index);
++
++   if (chain->base.present_mode == VK_PRESENT_MODE_FIFO_KHR) {
++      /* No present shows sooner than one refresh interval after the one
++       * before it. */
++      bigtime_t now = system_time();
++      if (chain->next_frame > now)
++         snooze_until(chain->next_frame, B_SYSTEM_TIMEBASE);
++      chain->next_frame = MAX2(now, chain->next_frame) + chain->frame_time;
++   }
++
++   BView *view = chain->view;
++   if (view->LockLooperWithTimeout(WSI_RENKU_LOCK_TIMEOUT) != B_OK)
++      return VK_SUCCESS; /* the window is busy or gone: the frame is dropped */
++
++   BRect frame(0, 0, chain->extent.width - 1, chain->extent.height - 1);
++   view->SetViewBitmap(bitmap, frame, frame, B_FOLLOW_TOP | B_FOLLOW_LEFT, 0);
++   /* app_server has taken the bitmap once this returns, so the other one
++    * can be written. A dropped frame leaves the one on screen as it is. */
++   view->Sync();
++   chain->next_bitmap ^= 1;
++
++   BRect bounds = view->Bounds();
++   if ((uint32_t)bounds.IntegerWidth() + 1 != chain->extent.width ||
++       (uint32_t)bounds.IntegerHeight() + 1 != chain->extent.height)
++      result = VK_SUBOPTIMAL_KHR;
++
++   view->UnlockLooper();
++   return result;
++}
++
++static VkResult
++wsi_renku_swapchain_wait_for_present(struct wsi_swapchain *wsi_chain,
++                                     uint64_t waitValue,
++                                     uint64_t timeout)
++{
++   return wsi_swapchain_wait_for_present_semaphore(wsi_chain, waitValue, timeout);
++}
++
++static VkResult
++wsi_renku_swapchain_destroy(struct wsi_swapchain *wsi_chain,
++                            const VkAllocationCallbacks *pAllocator)
++{
++   struct wsi_renku_swapchain *chain = (struct wsi_renku_swapchain *)wsi_chain;
++
++   for (uint32_t i = 0; i < chain->base.image_count; i++)
++      wsi_destroy_image(&chain->base, &chain->images[i].base);
++
++   /* The view may still show one of the bitmaps: app_server holds its own
++    * reference, so it stays on screen until the next swapchain's first
++    * present, or until the surface is destroyed. */
++   delete chain->bitmaps[0];
++   delete chain->bitmaps[1];
++
++   wsi_swapchain_finish(&chain->base);
++   u_cnd_monotonic_destroy(&chain->cond);
++   mtx_destroy(&chain->lock);
++   vk_free(pAllocator, chain);
++   return VK_SUCCESS;
++}
++
++/* One refresh interval of the screen the view is on, for FIFO. */
++static bigtime_t
++wsi_renku_frame_time(BView *view)
++{
++   display_mode mode;
++   bigtime_t frame_time = 1000000 / 60;
++
++   BScreen screen(B_MAIN_SCREEN_ID);
++   if (screen.IsValid() && screen.GetMode(&mode) == B_OK &&
++       mode.timing.pixel_clock && mode.timing.h_total && mode.timing.v_total) {
++      /* pixel_clock is in kHz */
++      uint64_t pixels = (uint64_t)mode.timing.h_total * mode.timing.v_total;
++      bigtime_t t = (bigtime_t)(pixels * 1000 / mode.timing.pixel_clock);
++      if (t >= 1000 && t <= 100000) /* 10 to 1000 Hz */
++         frame_time = t;
++   }
++   return frame_time;
++}
++
++static VkResult
++wsi_renku_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
++                                   VkDevice device,
++                                   struct wsi_device *wsi_device,
++                                   const VkSwapchainCreateInfoKHR *pCreateInfo,
++                                   const VkAllocationCallbacks *pAllocator,
++                                   struct wsi_swapchain **swapchain_out)
++{
++   VkIcdSurfaceRenku *surface = (VkIcdSurfaceRenku *)icd_surface;
++   struct wsi_renku_swapchain *chain;
++   VkResult result;
++
++   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
++
++   if (pCreateInfo->imageFormat != VK_FORMAT_B8G8R8A8_UNORM &&
++       pCreateInfo->imageFormat != VK_FORMAT_B8G8R8A8_SRGB)
++      return VK_ERROR_FORMAT_NOT_SUPPORTED;
++
++   const uint32_t num_images = MAX2(pCreateInfo->minImageCount, 2);
++   size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
++
++   chain = (struct wsi_renku_swapchain *)vk_zalloc(pAllocator, size, 8,
++                                                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
++   if (chain == NULL)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   if (mtx_init(&chain->lock, mtx_plain) != thrd_success) {
++      vk_free(pAllocator, chain);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++   if (u_cnd_monotonic_init(&chain->cond) != thrd_success) {
++      mtx_destroy(&chain->lock);
++      vk_free(pAllocator, chain);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++
++   struct wsi_cpu_image_params cpu_params = {};
++   cpu_params.base.image_type = WSI_IMAGE_TYPE_CPU;
++
++   result = wsi_swapchain_init(wsi_device, &chain->base, device,
++                               pCreateInfo, &cpu_params.base, pAllocator);
++   if (result != VK_SUCCESS) {
++      u_cnd_monotonic_destroy(&chain->cond);
++      mtx_destroy(&chain->lock);
++      vk_free(pAllocator, chain);
++      return result;
++   }
++
++   chain->base.destroy = wsi_renku_swapchain_destroy;
++   chain->base.get_wsi_image = wsi_renku_swapchain_get_wsi_image;
++   chain->base.acquire_next_image = wsi_renku_swapchain_acquire_next_image;
++   chain->base.release_images = wsi_renku_swapchain_release_images;
++   chain->base.queue_present = wsi_renku_swapchain_queue_present;
++   chain->base.wait_for_present = wsi_renku_swapchain_wait_for_present;
++   chain->base.wait_for_present2 = wsi_renku_swapchain_wait_for_present;
++   chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);
++
++   chain->view = surface->pView;
++   chain->extent = pCreateInfo->imageExtent;
++   chain->frame_time = wsi_renku_frame_time(chain->view);
++
++   /* A BBitmap needs the application's connection to app_server, which any
++    * program with a window has. */
++   BRect frame(0, 0, chain->extent.width - 1, chain->extent.height - 1);
++   for (unsigned i = 0; i < 2; i++) {
++      chain->bitmaps[i] = new (std::nothrow) BBitmap(frame, 0, B_RGB32);
++      if (chain->bitmaps[i] == NULL || chain->bitmaps[i]->InitCheck() != B_OK) {
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++         goto fail;
++      }
++   }
++
++   for (uint32_t i = 0; i < num_images; i++) {
++      result = wsi_create_image(&chain->base, &chain->base.image_info,
++                                &chain->images[i].base);
++      if (result != VK_SUCCESS)
++         goto fail;
++      chain->base.image_count++;
++   }
++
++   *swapchain_out = &chain->base;
++   return VK_SUCCESS;
++
++fail:
++   wsi_renku_swapchain_destroy(&chain->base, pAllocator);
++   return result;
++}
++
++void
++wsi_renku_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
++                          const VkAllocationCallbacks *pAllocator)
++{
++   VK_FROM_HANDLE(vk_instance, instance, _instance);
++   VkIcdSurfaceRenku *surface = (VkIcdSurfaceRenku *)icd_surface;
++
++   /* Takes the last frame off the view. */
++   if (surface->pView->LockLooperWithTimeout(WSI_RENKU_LOCK_TIMEOUT) == B_OK) {
++      surface->pView->ClearViewBitmap();
++      surface->pView->UnlockLooper();
++   }
++
++   vk_free2(&instance->alloc, pAllocator, surface);
++}
++
++VkResult
++wsi_renku_init_wsi(struct wsi_device *wsi_device,
++                   const VkAllocationCallbacks *alloc,
++                   VkPhysicalDevice physical_device)
++{
++   struct wsi_renku *wsi = (struct wsi_renku *)
++      vk_zalloc(alloc, sizeof(*wsi), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (wsi == NULL) {
++      wsi_device->wsi[VK_ICD_WSI_PLATFORM_RENKU] = NULL;
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++
++   wsi->base.get_support = wsi_renku_surface_get_support;
++   wsi->base.get_capabilities2 = wsi_renku_surface_get_capabilities2;
++   wsi->base.get_formats = wsi_renku_surface_get_formats;
++   wsi->base.get_formats2 = wsi_renku_surface_get_formats2;
++   wsi->base.get_present_modes = wsi_renku_surface_get_present_modes;
++   wsi->base.get_present_rectangles = wsi_renku_surface_get_present_rectangles;
++   wsi->base.create_swapchain = wsi_renku_surface_create_swapchain;
++
++   wsi_device->wsi[VK_ICD_WSI_PLATFORM_RENKU] = &wsi->base;
++   return VK_SUCCESS;
++}
++
++void
++wsi_renku_finish_wsi(struct wsi_device *wsi_device,
++                     const VkAllocationCallbacks *alloc)
++{
++   struct wsi_renku *wsi = (struct wsi_renku *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_RENKU];
++   if (wsi == NULL)
++      return;
++   vk_free(alloc, wsi);
++}
+-- 
+2.47.3
+
+
+From f634f90477caa57893b8ab55180f7583e02b703c Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Tue, 24 Nov 2026 19:22:07 +1000
+Subject: [PATCH 8/8] lavapipe: Offer the RenkuOS surface.
+
+With VK_USE_PLATFORM_RENKU, lavapipe counts as having a window system
+(LVP_USE_WSI_PLATFORM), which gives it VK_KHR_surface, VK_KHR_swapchain
+and the rest of the WSI extensions, and it offers VK_RENKU_surface.
+Before, lavapipe on RenkuOS had no VK_KHR_swapchain, and DXVK refuses a
+device without it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/gallium/frontends/lavapipe/lvp_device.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/frontends/lavapipe/lvp_device.c b/src/gallium/frontends/lavapipe/lvp_device.c
+index d40223f..a712fd9 100644
+--- a/src/gallium/frontends/lavapipe/lvp_device.c
++++ b/src/gallium/frontends/lavapipe/lvp_device.c
+@@ -68,7 +68,8 @@
+     defined(VK_USE_PLATFORM_WIN32_KHR) || \
+     defined(VK_USE_PLATFORM_XCB_KHR) || \
+     defined(VK_USE_PLATFORM_XLIB_KHR) || \
+-    defined(VK_USE_PLATFORM_METAL_EXT)
++    defined(VK_USE_PLATFORM_METAL_EXT) || \
++    defined(VK_USE_PLATFORM_RENKU)
+ #define LVP_USE_WSI_PLATFORM
+ #endif
+ 
+@@ -128,6 +129,9 @@ static const struct vk_instance_extension_table lvp_instance_extensions_supporte
+ #ifdef VK_USE_PLATFORM_METAL_EXT
+    .EXT_metal_surface                        = true,
+ #endif
++#ifdef VK_USE_PLATFORM_RENKU
++   .RENKU_surface                            = true,
++#endif
+ #if defined(LVP_USE_WSI_PLATFORM) && !defined(VK_USE_PLATFORM_WIN32_KHR)
+    .EXT_headless_surface                     = true,
+ #endif
+-- 
+2.47.3
+

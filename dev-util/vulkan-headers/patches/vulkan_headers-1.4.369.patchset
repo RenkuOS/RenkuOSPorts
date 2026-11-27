@@ -1,0 +1,358 @@
+From 324cac0857976780960b38725f7101f048a3e09e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Joachim=20Mairb=C3=B6ck?= <j.mairboeck@gmail.com>
+Date: Mon, 26 Oct 2026 18:31:36 +0100
+Subject: [PATCH 1/3] fix cmake installation path
+
+---
+ CMakeLists.txt | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 25eb921..cb776be 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -111,15 +111,15 @@ if (VULKAN_HEADERS_ENABLE_INSTALL)
+             FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+         install(EXPORT VulkanHeadersConfig
+             NAMESPACE "Vulkan::"
+-            DESTINATION "share/cmake/VulkanHeaders"
++            DESTINATION "${CMAKE_INSTALL_DATADIR}/cmake/VulkanHeaders"
+             CXX_MODULES_DIRECTORY "")
+     else()
+         install(EXPORT VulkanHeadersConfig
+             NAMESPACE "Vulkan::"
+-            DESTINATION "share/cmake/VulkanHeaders")
++            DESTINATION "${CMAKE_INSTALL_DATADIR}/cmake/VulkanHeaders")
+     endif()
+ 
+     set(version_config "${CMAKE_CURRENT_BINARY_DIR}/generated/VulkanHeadersConfigVersion.cmake")
+     write_basic_package_version_file("${version_config}" COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
+-    install(FILES "${version_config}" DESTINATION "share/cmake/VulkanHeaders")
++    install(FILES "${version_config}" DESTINATION "${CMAKE_INSTALL_DATADIR}/cmake/VulkanHeaders")
+ endif()
+-- 
+2.47.3
+
+
+From 221e9ac1fa7e684b2bc5556180330db957945c8e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Joachim=20Mairb=C3=B6ck?= <j.mairboeck@gmail.com>
+Date: Mon, 26 Oct 2026 18:51:35 +0100
+Subject: [PATCH 2/3] fix dynamic loading on Haiku
+
+---
+ include/vulkan/vulkan.hpp            | 10 +++++-----
+ include/vulkan/vulkan_hpp_macros.hpp |  2 +-
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/include/vulkan/vulkan.hpp b/include/vulkan/vulkan.hpp
+index bb29ccf..10ca994 100644
+--- a/include/vulkan/vulkan.hpp
++++ b/include/vulkan/vulkan.hpp
+@@ -26208,7 +26208,7 @@ VULKAN_HPP_EXPORT namespace VULKAN_HPP_NAMESPACE
+         {
+ #  if defined( _WIN32 )
+           m_library = ::LoadLibraryA( vulkanLibraryName.c_str() );
+-#  elif defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ )
++#  elif defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ ) || defined( __HAIKU__ )
+           m_library = dlopen( vulkanLibraryName.c_str(), RTLD_NOW | RTLD_LOCAL );
+ #  else
+ #    error unsupported platform
+@@ -26249,7 +26249,7 @@ VULKAN_HPP_EXPORT namespace VULKAN_HPP_NAMESPACE
+           {
+             m_library = dlopen( "MoltenVK.framework/MoltenVK", RTLD_NOW | RTLD_LOCAL );
+           }
+-#  elif defined( __unix__ ) || defined( __QNX__ ) || defined( __Fuchsia__ )
++#  elif defined( __unix__ ) || defined( __QNX__ ) || defined( __Fuchsia__ ) || defined( __HAIKU__ )
+           m_library = dlopen( "libvulkan.so", RTLD_NOW | RTLD_LOCAL );
+           if ( !m_library )
+           {
+@@ -26288,7 +26288,7 @@ VULKAN_HPP_EXPORT namespace VULKAN_HPP_NAMESPACE
+       {
+         if ( m_library )
+         {
+-#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ )
++#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ ) || defined( __HAIKU__ )
+           dlclose( m_library );
+ #  elif defined( _WIN32 )
+           ::FreeLibrary( m_library );
+@@ -26301,7 +26301,7 @@ VULKAN_HPP_EXPORT namespace VULKAN_HPP_NAMESPACE
+       template <typename T>
+       T getProcAddress( char const * function ) const VULKAN_HPP_NOEXCEPT
+       {
+-#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ )
++#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ ) || defined( __HAIKU__ )
+         return (T)(void *)dlsym( m_library, function );
+ #  elif defined( _WIN32 )
+         return (T)(void *)::GetProcAddress( m_library, function );
+@@ -26316,7 +26316,7 @@ VULKAN_HPP_EXPORT namespace VULKAN_HPP_NAMESPACE
+       }
+ 
+     private:
+-#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ )
++#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ ) || defined( __HAIKU__ )
+       void * m_library;
+ #  elif defined( _WIN32 )
+       ::HINSTANCE m_library;
+diff --git a/include/vulkan/vulkan_hpp_macros.hpp b/include/vulkan/vulkan_hpp_macros.hpp
+index 8c92b30..0dfd2c8 100644
+--- a/include/vulkan/vulkan_hpp_macros.hpp
++++ b/include/vulkan/vulkan_hpp_macros.hpp
+@@ -87,7 +87,7 @@
+ #endif
+ 
+ #if VULKAN_HPP_ENABLE_DYNAMIC_LOADER_TOOL == 1
+-#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ )
++#  if defined( __unix__ ) || defined( __APPLE__ ) || defined( __QNX__ ) || defined( __Fuchsia__ ) || defined( __HAIKU__ )
+ #    include <dlfcn.h>
+ #  elif defined( _WIN32 ) && !defined( VULKAN_HPP_NO_WIN32_PROTOTYPES )
+ using HINSTANCE = struct HINSTANCE__ *;
+-- 
+2.47.3
+
+
+From 3c059e3e617b6565d2e9a05a05eb1f4563286e6b Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Tue, 24 Nov 2026 19:08:52 +1000
+Subject: [PATCH 3/3] Add VK_RENKU_surface and the renku platform
+
+A surface extension for RenkuOS: vkCreateSurfaceRENKU makes a surface
+for a BView. Generated with Vulkan-Docs' own scripts (make -C xml
+install, at v1.4.369) from a vk.xml that adds the extension; compared
+with this release, only vulkan_renku.h is new, vulkan_core.h gains
+VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU (1000734000) and vulkan.h
+includes the new header under VK_USE_PLATFORM_RENKU. registry/vk.xml is
+that vk.xml.
+
+vk_icd.h, which is not generated, gets VK_ICD_WSI_PLATFORM_RENKU at the
+end of the platform list and VkIcdSurfaceRenku, the surface the loader
+hands to a driver. Its pView member has the create info's name, which
+the loader's generator copies by name.
+
+Not upstream yet. Khronos registered the RENKU tag and extension
+number 735 for VK_RENKU_surface (Vulkan-Docs #2859, merged 2026-11-25,
+supported="disabled": the interface is not published there yet).
+VK_ICD_WSI_PLATFORM_RENKU (17) is shared only by the loader and Mesa
+built from these headers; a platform Khronos adds later would take the
+same value, and these would have to move.
+
+The C++ headers (vulkan.hpp and the rest) are generated by Vulkan-Hpp
+and are not changed: they don't know the extension, and still compile
+with VK_USE_PLATFORM_RENKU defined.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/vulkan/vk_icd.h       |  8 +++++
+ include/vulkan/vulkan.h       |  5 +++
+ include/vulkan/vulkan_core.h  |  1 +
+ include/vulkan/vulkan_renku.h | 61 +++++++++++++++++++++++++++++++++++
+ registry/vk.xml               | 33 +++++++++++++++++++
+ 5 files changed, 108 insertions(+)
+ create mode 100644 include/vulkan/vulkan_renku.h
+
+diff --git a/include/vulkan/vk_icd.h b/include/vulkan/vk_icd.h
+index 48a1646..a65e089 100644
+--- a/include/vulkan/vk_icd.h
++++ b/include/vulkan/vk_icd.h
+@@ -119,6 +119,7 @@ typedef enum {
+     VK_ICD_WSI_PLATFORM_SCREEN,
+     VK_ICD_WSI_PLATFORM_FUCHSIA,
+     VK_ICD_WSI_PLATFORM_UBM,
++    VK_ICD_WSI_PLATFORM_RENKU,
+ } VkIcdWsiPlatform;
+ 
+ typedef struct {
+@@ -251,3 +252,10 @@ typedef struct {
+   VkIcdSurfaceBase base;
+ } VkIcdSurfaceImagePipe;
+ #endif // VK_USE_PLATFORM_FUCHSIA
++
++#ifdef VK_USE_PLATFORM_RENKU
++typedef struct {
++    VkIcdSurfaceBase base;
++    BView *pView;
++} VkIcdSurfaceRenku;
++#endif // VK_USE_PLATFORM_RENKU
+diff --git a/include/vulkan/vulkan.h b/include/vulkan/vulkan.h
+index 6f38fc4..8c0598a 100644
+--- a/include/vulkan/vulkan.h
++++ b/include/vulkan/vulkan.h
+@@ -98,6 +98,11 @@
+ #include "vulkan_ohos.h"
+ #endif
+ 
++
++#ifdef VK_USE_PLATFORM_RENKU
++#include "vulkan_renku.h"
++#endif
++
+ /* vulkan_beta.h should go last in the event any beta extension interactions
+  * with platform extensions exist.
+  */
+diff --git a/include/vulkan/vulkan_core.h b/include/vulkan/vulkan_core.h
+index 5cfbde2..0e197bc 100644
+--- a/include/vulkan/vulkan_core.h
++++ b/include/vulkan/vulkan_core.h
+@@ -1499,6 +1499,7 @@ typedef enum VkStructureType {
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HDR_SMPTE_ST_209450_FEATURES_GOOGLE = 1000718000,
+     VK_STRUCTURE_TYPE_HDR_SMPTE_ST_209450_GOOGLE = 1000718001,
+     VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_HDR_SMPTE_ST_209450_GOOGLE = 1000718002,
++    VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU = 1000734000,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES,
+     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETER_FEATURES = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES,
+   // VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT is a legacy alias
+diff --git a/include/vulkan/vulkan_renku.h b/include/vulkan/vulkan_renku.h
+new file mode 100644
+index 0000000..2b2f213
+--- /dev/null
++++ b/include/vulkan/vulkan_renku.h
+@@ -0,0 +1,61 @@
++#ifndef VULKAN_RENKU_H_
++#define VULKAN_RENKU_H_ 1
++
++/*
++** Copyright 2015-2026 The Khronos Group Inc.
++**
++** SPDX-License-Identifier: Apache-2.0 OR MIT
++*/
++
++/*
++** This header is generated from the Khronos Vulkan XML API Registry.
++**
++*/
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++
++
++// VK_RENKU_surface is a preprocessor guard. Do not pass it to API calls.
++#define VK_RENKU_surface 1
++
++#ifdef __cplusplus
++class BView;
++#else
++typedef struct BView BView;
++#endif
++
++#define VK_RENKU_SURFACE_SPEC_VERSION     1
++#define VK_RENKU_SURFACE_EXTENSION_NAME   "VK_RENKU_surface"
++
++typedef VkFlags VkSurfaceCreateFlagsRENKU;
++
++typedef struct VkSurfaceCreateInfoRENKU {
++    VkStructureType              sType;
++    const void*                  pNext;
++    VkSurfaceCreateFlagsRENKU    flags;
++    BView*                       pView;
++} VkSurfaceCreateInfoRENKU;
++
++
++typedef VkResult (VKAPI_PTR *PFN_vkCreateSurfaceRENKU)(VkInstance instance, const VkSurfaceCreateInfoRENKU* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
++
++#ifndef VK_NO_PROTOTYPES
++
++#ifndef VK_ONLY_EXPORTED_PROTOTYPES
++VKAPI_ATTR VkResult VKAPI_CALL vkCreateSurfaceRENKU(
++    VkInstance                                  instance,
++    const VkSurfaceCreateInfoRENKU*             pCreateInfo,
++    const VkAllocationCallbacks*                pAllocator,
++    VkSurfaceKHR*                               pSurface);
++#endif
++#endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/registry/vk.xml b/registry/vk.xml
+index 8f8561b..963a50f 100644
+--- a/registry/vk.xml
++++ b/registry/vk.xml
+@@ -36,6 +36,7 @@ branch of the member gitlab server.
+         <platform name="provisional" protect="VK_ENABLE_BETA_EXTENSIONS" comment="Enable declarations for beta/provisional extensions" />
+         <platform name="screen" protect="VK_USE_PLATFORM_SCREEN_QNX" comment="QNX Screen Graphics Subsystem" />
+         <platform name="ohos" protect="VK_USE_PLATFORM_OHOS" comment="Open Harmony OS" />
++        <platform name="renku" protect="VK_USE_PLATFORM_RENKU" comment="RenkuOS" />
+     </platforms>
+ 
+     <tags comment="Vulkan vendor/author tags for extensions and layers">
+@@ -85,6 +86,7 @@ branch of the member gitlab server.
+         <tag name="MWS" author="Mercurius Window System" contact="Christopher Ross, chris@tebibyte.org, mercurius@tebibyte.org" />
+         <tag name="APEX" author="Apex Compute" contact="Selim Sandal @selimsandal, selim@apexcompute.com" />
+         <tag name="RFIVE" author="R5 Operating System" contact="@r5-operating-system" />
++        <tag name="RENKU" author="RenkuOS" contact="Kevin Adams @KevinAdams05, kevinadams05@gmail.com" />
+     </tags>
+ 
+     <types comment="Vulkan type definitions">
+@@ -293,6 +295,12 @@ typedef void* <name>MTLSharedEvent_id</name>;
+         <type category="basetype">struct <name>OHBufferHandle</name>;</type>
+         <type category="basetype">struct <name>OH_NativeBuffer</name>;</type>
+ 
++        <type category="basetype">#ifdef __cplusplus
++class BView;
++#else
++typedef struct BView <name>BView</name>;
++#endif</type>
++
+             <comment>Basic C types, pulled in via vk_platform.h</comment>
+         <type requires="vk_platform" name="void" />
+         <type requires="vk_platform" name="char" />
+@@ -540,6 +548,7 @@ typedef void* <name>MTLSharedEvent_id</name>;
+         <type requires="VkTileShadingRenderPassFlagBitsQCOM" category="bitmask">typedef <type>VkFlags</type> <name>VkTileShadingRenderPassFlagsQCOM</name>;</type>
+         <type bitvalues="VkPhysicalDeviceSchedulingControlsFlagBitsARM" category="bitmask">typedef <type>VkFlags64</type> <name>VkPhysicalDeviceSchedulingControlsFlagsARM</name>;</type>
+         <type category="bitmask">typedef <type>VkFlags</type> <name>VkSurfaceCreateFlagsOHOS</name>;</type>
++        <type category="bitmask">typedef <type>VkFlags</type> <name>VkSurfaceCreateFlagsRENKU</name>;</type>
+         <type requires="VkPresentStageFlagBitsEXT" category="bitmask">typedef <type>VkFlags</type> <name>VkPresentStageFlagsEXT</name>;</type>
+         <type requires="VkPastPresentationTimingFlagBitsEXT" category="bitmask">typedef <type>VkFlags</type> <name>VkPastPresentationTimingFlagsEXT</name>;</type>
+         <type requires="VkPresentTimingInfoFlagBitsEXT" category="bitmask">typedef <type>VkFlags</type> <name>VkPresentTimingInfoFlagsEXT</name>;</type>
+@@ -11378,6 +11387,12 @@ typedef void* <name>MTLSharedEvent_id</name>;
+             <member optional="true"><type>VkSurfaceCreateFlagsOHOS</type> <name>flags</name></member>
+             <member noautovalidity="true"><type>OHNativeWindow</type>*    <name>window</name></member>
+         </type>
++        <type category="struct" name="VkSurfaceCreateInfoRENKU">
++            <member values="VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU"><type>VkStructureType</type> <name>sType</name></member>
++            <member optional="true">const <type>void</type>*                                    <name>pNext</name></member>
++            <member optional="true"><type>VkSurfaceCreateFlagsRENKU</type> <name>flags</name></member>
++            <member noautovalidity="true"><type>BView</type>*             <name>pView</name></member>
++        </type>
+         <type category="struct" name="VkPhysicalDeviceDataGraphFeaturesARM" structextends="VkPhysicalDeviceFeatures2,VkDeviceCreateInfo">
+             <member values="VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DATA_GRAPH_FEATURES_ARM"><type>VkStructureType</type> <name>sType</name></member>
+             <member optional="true"><type>void</type>* <name>pNext</name></member>
+@@ -15950,6 +15965,13 @@ endif::VK_KHR_internally_synchronized_queues[]
+             <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
+             <param><type>VkSurfaceKHR</type>* <name>pSurface</name></param>
+         </command>
++        <command successcodes="VK_SUCCESS" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_SURFACE_LOST_KHR,VK_ERROR_UNKNOWN,VK_ERROR_VALIDATION_FAILED">
++            <proto><type>VkResult</type> <name>vkCreateSurfaceRENKU</name></proto>
++            <param><type>VkInstance</type> <name>instance</name></param>
++            <param>const <type>VkSurfaceCreateInfoRENKU</type>* <name>pCreateInfo</name></param>
++            <param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>
++            <param><type>VkSurfaceKHR</type>* <name>pSurface</name></param>
++        </command>
+         <command successcodes="VK_SUCCESS,VK_INCOMPLETE" errorcodes="VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_OUT_OF_DEVICE_MEMORY,VK_ERROR_UNKNOWN,VK_ERROR_VALIDATION_FAILED">
+             <proto><type>VkResult</type> <name>vkGetPhysicalDeviceDisplayPropertiesKHR</name></proto>
+             <param><type>VkPhysicalDevice</type> <name>physicalDevice</name></param>
+@@ -32807,6 +32829,17 @@ endif::VK_KHR_internally_synchronized_queues[]
+                 <enum bitpos="62" extends="VkFormatFeatureFlagBits2" name="VK_FORMAT_FEATURE_2_RESERVED_62_BIT_QCOM" />
+             </require>
+         </extension>
++        <extension name="VK_RENKU_surface" number="735" type="instance" depends="VK_KHR_surface" platform="renku" author="RENKU" contact="Kevin Adams @KevinAdams05" supported="vulkan" nofeatures="true">
++            <require>
++                <enum value="1" name="VK_RENKU_SURFACE_SPEC_VERSION" />
++                <enum value="&quot;VK_RENKU_surface&quot;" name="VK_RENKU_SURFACE_EXTENSION_NAME" />
++                <enum offset="0" extends="VkStructureType" name="VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU" />
++                <type name="VkSurfaceCreateFlagsRENKU" />
++                <type name="VkSurfaceCreateInfoRENKU" />
++                <type name="BView" />
++                <command name="vkCreateSurfaceRENKU" />
++            </require>
++        </extension>
+     </extensions>
+     <formats>
+         <format name="VK_FORMAT_R4G4_UNORM_PACK8" class="8-bit" blockSize="1" texelsPerBlock="1" packed="8">
+-- 
+2.47.3
+

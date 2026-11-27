@@ -1,0 +1,613 @@
+From c26572afb31f5598bf85c6c786a116886fb123b1 Mon Sep 17 00:00:00 2001
+From: X512 <danger_mail@list.ru>
+Date: Sun, 9 Jan 2022 06:34:23 +0900
+Subject: [PATCH 1/5] basic fixes for haiku
+
+Rebased onto 1.4.369: upstream reformatted loader.c and
+loader_environment.c ("char *" became "char*"), so both hunks were
+carried over by hand. The change is the same; the xdg_* globals now use
+the new pointer style and file-scope indentation.
+---
+ loader/loader.c             | 11 +++++++++++
+ loader/loader_environment.c |  2 +-
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/loader/loader.c b/loader/loader.c
+index 679798b..a8392cb 100644
+--- a/loader/loader.c
++++ b/loader/loader.c
+@@ -89,6 +89,17 @@ struct activated_layer_info {
+     char* enable_value_env;
+ };
+ 
++#if defined(__HAIKU__)
++char* xdg_config_home = NULL;
++char* xdg_config_dirs = NULL;
++char* xdg_data_home = NULL;
++char* xdg_data_dirs =
++    "/boot/home/config/non-packaged/add-ons:"
++    "/boot/home/config/add-ons:"
++    "/boot/system/non-packaged/add-ons:"
++    "/boot/system/add-ons";
++#endif
++
+ // thread safety lock for accessing global data structures such as "loader"
+ // all entrypoints on the instance chain need to be locked except GPA
+ // additionally CreateDevice and DestroyDevice needs to be locked
+diff --git a/loader/loader_environment.c b/loader/loader_environment.c
+index bd59d49..cf2a21d 100644
+--- a/loader/loader_environment.c
++++ b/loader/loader_environment.c
+@@ -49,7 +49,7 @@ char* loader_getenv(const char* name, const struct loader_instance* inst) {
+ }
+ 
+ char* loader_secure_getenv(const char* name, const struct loader_instance* inst) {
+-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
++#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__HAIKU__)
+     // Apple does not appear to have a secure getenv implementation.
+     // The main difference between secure getenv and getenv is that secure getenv
+     // returns NULL if the process is being run with elevated privileges by a normal user.
+-- 
+2.47.3
+
+
+From cf3d2e408e30164d399a9b86dbfbe6b4641897bc Mon Sep 17 00:00:00 2001
+From: Ken Mays <kmays2000@gmail.com>
+Date: Fri, 6 Sep 2024 05:26:34 +0000
+Subject: [PATCH 2/5] Improve port for Haiku
+
+---
+ CMakeLists.txt              | 2 +-
+ loader/vk_loader_platform.h | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3c6adae..b680238 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -136,7 +136,7 @@ elseif(APPLE)
+     if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+         target_compile_definitions(platform_wsi INTERFACE VK_USE_PLATFORM_MACOS_MVK)
+     endif()
+-elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|DragonFly|GNU|CYGWIN")
++elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|DragonFly|GNU|CYGWIN|Haiku")
+     option(BUILD_WSI_XCB_SUPPORT "Build XCB WSI support" ON)
+     option(BUILD_WSI_XLIB_SUPPORT "Build Xlib WSI support" ON)
+     option(BUILD_WSI_XLIB_XRANDR_SUPPORT "Build X11 Xrandr WSI support" ON)
+diff --git a/loader/vk_loader_platform.h b/loader/vk_loader_platform.h
+index 35794ce..6abb292 100644
+--- a/loader/vk_loader_platform.h
++++ b/loader/vk_loader_platform.h
+@@ -26,7 +26,7 @@
+  */
+ #pragma once
+ 
+-#if defined(__FreeBSD__) || defined(__OpenBSD__)
++#if defined(__FreeBSD__) || defined(__OpenBSD__)|| defined(__HAIKU__)
+ #include <sys/types.h>
+ #include <sys/select.h>
+ #endif
+@@ -44,7 +44,7 @@
+ 
+ // Set of platforms with a common set of functionality which is queried throughout the program
+ #if defined(__linux__) || defined(__APPLE__) || defined(__Fuchsia__) || defined(__QNX__) || defined(__FreeBSD__) || \
+-    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__GNU__) || defined(__CYGWIN__)
++    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__) || defined(__GNU__) || defined(__CYGWIN__) || defined(__HAIKU__)
+ #define COMMON_UNIX_PLATFORMS 1
+ #else
+ #define COMMON_UNIX_PLATFORMS 0
+-- 
+2.47.3
+
+
+From e0cde270700c8262933950407695705a293b27fc Mon Sep 17 00:00:00 2001
+From: X512 <danger_mail@list.ru>
+Date: Sun, 9 Mar 2025 19:11:24 +0900
+Subject: [PATCH 3/5] haiku: use FindDirectory
+
+Rebased onto 1.4.369: upstream reformatted loader.c ("char *" became
+"char*"), so two hunks were carried over by hand. The change is the
+same.
+---
+ loader/loader.c | 32 +++++++++++++++++++++-----------
+ 1 file changed, 21 insertions(+), 11 deletions(-)
+
+diff --git a/loader/loader.c b/loader/loader.c
+index a8392cb..3c9de86 100644
+--- a/loader/loader.c
++++ b/loader/loader.c
+@@ -45,6 +45,11 @@
+ #include <sys/param.h>
+ #endif
+ 
++#if defined(__HAIKU__)
++#include <FindDirectory.h>
++#include <Architecture.h>
++#endif
++
+ #include <sys/types.h>
+ #if defined(_WIN32)
+ #include "dirent_on_windows.h"
+@@ -89,17 +94,6 @@ struct activated_layer_info {
+     char* enable_value_env;
+ };
+ 
+-#if defined(__HAIKU__)
+-char* xdg_config_home = NULL;
+-char* xdg_config_dirs = NULL;
+-char* xdg_data_home = NULL;
+-char* xdg_data_dirs =
+-    "/boot/home/config/non-packaged/add-ons:"
+-    "/boot/home/config/add-ons:"
+-    "/boot/system/non-packaged/add-ons:"
+-    "/boot/system/add-ons";
+-#endif
+-
+ // thread safety lock for accessing global data structures such as "loader"
+ // all entrypoints on the instance chain need to be locked except GPA
+ // additionally CreateDevice and DestroyDevice needs to be locked
+@@ -2997,6 +2991,9 @@ VkResult read_data_files_in_search_paths(const struct loader_instance* inst, enu
+ 
+ #if defined(_WIN32)
+     char* package_path = NULL;
++#elif defined(__HAIKU__)
++    char** directories = NULL;
++    size_t directory_count = 0;
+ #elif COMMON_UNIX_PLATFORMS
+     // Determine how much space is needed to generate the full search path
+     // for the current manifest files.
+@@ -3161,6 +3158,17 @@ VkResult read_data_files_in_search_paths(const struct loader_instance* inst, enu
+                 goto out;
+             }
+         }
++#elif defined(__HAIKU__)
++        if (find_paths_etc(get_architecture(), B_FIND_PATH_ADD_ONS_DIRECTORY, relative_location, 0, &directories, &directory_count) != B_OK) {
++            vk_result = VK_ERROR_OUT_OF_HOST_MEMORY;
++            goto out;
++        }
++        for (size_t i = 0; i < directory_count; i++) {
++            vk_result = copy_data_file_info(inst, directories[i], NULL, 0, &search_paths);
++            if (vk_result == VK_ERROR_OUT_OF_HOST_MEMORY) {
++                goto out;
++            }
++        }
+ #elif COMMON_UNIX_PLATFORMS
+         bool search_outside_of_bundle = true;
+ 
+@@ -3309,6 +3317,8 @@ out:
+     loader_free_getenv(override_env, inst);
+ #if defined(_WIN32)
+     loader_instance_heap_free(inst, package_path);
++#elif defined(__HAIKU__)
++    free(directories);
+ #elif COMMON_UNIX_PLATFORMS
+ #if defined(__APPLE__)
+     loader_instance_heap_free(inst, bundle_path);
+-- 
+2.47.3
+
+
+From f5943c86ff0efd7ad0dada3968891066497ddf4f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Joachim=20Mairb=C3=B6ck?= <j.mairboeck@gmail.com>
+Date: Mon, 26 Oct 2026 17:05:33 +0100
+Subject: [PATCH 4/5] implement loader_platform_executable_path
+
+Rebased onto 1.4.369: upstream reformatted vk_loader_platform.c
+("char *" became "char*"), so the hunk was carried over by hand in the
+new style. The change is the same.
+---
+ loader/vk_loader_platform.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/loader/vk_loader_platform.c b/loader/vk_loader_platform.c
+index 37c3bcf..b174e17 100644
+--- a/loader/vk_loader_platform.c
++++ b/loader/vk_loader_platform.c
+@@ -133,6 +133,27 @@ char* loader_platform_executable_path(const struct loader_instance* inst, bool*
+ 
+     return buffer;
+ }
++#elif defined(__HAIKU__)
++#include <image.h>
++#include <string.h>
++char* loader_platform_executable_path(const struct loader_instance* inst, bool* oom) {
++    size_t size = MAXPATHLEN;
++    char* buffer = loader_instance_heap_calloc(inst, size, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
++    if (NULL == buffer) {
++        *oom = true;
++        return NULL;
++    }
++    image_info info;
++    int32 cookie = 0;
++    while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
++        if (info.type == B_APP_IMAGE) {
++            strlcpy(buffer, info.name, size);
++            return buffer;
++        }
++    }
++    loader_instance_heap_free(inst, buffer);
++    return NULL;
++}
+ #elif defined(__Fuchsia__) || defined(__OpenBSD__)
+ char* loader_platform_executable_path(const struct loader_instance* inst, bool* oom) {
+     (void)inst;
+-- 
+2.47.3
+
+
+From 33b5dddbe48bc5c03302c7e1c6f7b6c8c27fa2bc Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Tue, 24 Nov 2026 19:10:09 +1000
+Subject: [PATCH 5/5] Add the RenkuOS surface (VK_RENKU_surface)
+
+The loader passes vkCreateSurfaceRENKU through to drivers like any
+other surface extension: a trampoline and a terminator that keep a
+VkIcdSurfaceRenku (the view) and the create info, and lazy creation
+of each driver's surface in wsi_unwrap_icd_surface. All of it is
+generated, from the Vulkan-Headers registry with VK_RENKU_surface.
+
+- CMakeLists.txt: on Haiku (RenkuOS's compiler still names the system
+  that), BUILD_WSI_RENKU_SUPPORT, on by default, defines
+  VK_USE_PLATFORM_RENKU.
+- The generator names a surface's VkIcdSurface member and
+  VK_ICD_WSI_PLATFORM_* value after the third word of the extension
+  name, which for VK_RENKU_surface is "surface". It now uses "renku"
+  for this one.
+- wsi.h: renku_surf in the VkIcdSurface union. wsi.c: without the
+  platform, a driver's VK_RENKU_surface is not offered.
+- loader/generated and the two generated test headers: regenerated
+  with scripts/generate_source.py. Generated from the registry
+  without the extension, they are unchanged (--verify passes), so the
+  diff is the extension only.
+
+Needs the Vulkan-Headers patch that adds VK_RENKU_surface.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt                                |  7 ++
+ loader/generated/vk_layer_dispatch_table.h    |  5 ++
+ loader/generated/vk_loader_extensions.c       | 30 ++++++++
+ loader/generated/vk_loader_extensions.h       |  8 ++
+ loader/generated/vk_loader_wsi.c              | 76 +++++++++++++++++++
+ loader/generated/vk_loader_wsi.h              | 10 +++
+ loader/wsi.c                                  |  3 +
+ loader/wsi.h                                  |  3 +
+ scripts/generators/loader_wsi_generator.py    |  5 ++
+ .../generated/get_proc_addr_validator.h       |  3 +
+ .../generated/vk_dispatch_table_helper.h      |  3 +
+ 11 files changed, 153 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b680238..1d5dd07 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -171,6 +171,13 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|DragonFly|GNU|CYGWIN|Haiku")
+         # vulkan_core.h includes <directfb.h> but the header is installed to directfb/directfb.h
+         target_include_directories(platform_wsi INTERFACE ${DIRECTFB_INCLUDE_DIRS} ${DIRECTFB_INCLUDE_DIRS}/directfb)
+     endif()
++    # RenkuOS's compiler still names the system Haiku
++    if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
++        option(BUILD_WSI_RENKU_SUPPORT "Build RenkuOS WSI support" ON)
++        if(BUILD_WSI_RENKU_SUPPORT)
++            target_compile_definitions(platform_wsi INTERFACE VK_USE_PLATFORM_RENKU)
++        endif()
++    endif()
+ elseif(CMAKE_SYSTEM_NAME MATCHES "QNX")
+     message(FATAL_ERROR "See BUILD.md for QNX build")
+ elseif(CMAKE_SYSTEM_NAME MATCHES "Fuchsia")
+diff --git a/loader/generated/vk_layer_dispatch_table.h b/loader/generated/vk_layer_dispatch_table.h
+index c241b6f..9a7e64e 100644
+--- a/loader/generated/vk_layer_dispatch_table.h
++++ b/loader/generated/vk_layer_dispatch_table.h
+@@ -335,6 +335,11 @@ typedef struct VkLayerInstanceDispatchTable_ {
+ 
+     // ---- VK_NV_internal_handle extension commands
+     PFN_vkGetPhysicalDeviceInternalHandleNV GetPhysicalDeviceInternalHandleNV;
++
++    // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++    PFN_vkCreateSurfaceRENKU CreateSurfaceRENKU;
++#endif // VK_USE_PLATFORM_RENKU
+ } VkLayerInstanceDispatchTable;
+ 
+ // Device function pointer dispatch table
+diff --git a/loader/generated/vk_loader_extensions.c b/loader/generated/vk_loader_extensions.c
+index f8af31a..ee12e15 100644
+--- a/loader/generated/vk_loader_extensions.c
++++ b/loader/generated/vk_loader_extensions.c
+@@ -361,6 +361,11 @@ VKAPI_ATTR bool VKAPI_CALL loader_icd_init_entries(struct loader_instance* inst,
+     // ---- VK_NV_internal_handle extension commands
+     LOOKUP_GIPA(GetPhysicalDeviceInternalHandleNV);
+ 
++    // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++    LOOKUP_GIPA(CreateSurfaceRENKU);
++#endif // VK_USE_PLATFORM_RENKU
++
+ #undef LOOKUP_REQUIRED_GIPA
+ #undef LOOKUP_GIPA
+ 
+@@ -1794,6 +1799,11 @@ VKAPI_ATTR void VKAPI_CALL loader_init_instance_extension_dispatch_table(VkLayer
+ 
+     // ---- VK_NV_internal_handle extension commands
+     table->GetPhysicalDeviceInternalHandleNV = (PFN_vkGetPhysicalDeviceInternalHandleNV)gpa(inst, "vkGetPhysicalDeviceInternalHandleNV");
++
++    // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++    table->CreateSurfaceRENKU = (PFN_vkCreateSurfaceRENKU)gpa(inst, "vkCreateSurfaceRENKU");
++#endif // VK_USE_PLATFORM_RENKU
+ }
+ 
+ // Functions that required a terminator need to have a separate dispatch table which contains their corresponding
+@@ -5595,6 +5605,13 @@ VKAPI_ATTR void* VKAPI_CALL loader_lookup_instance_dispatch_table(const VkLayerI
+         case 0xc5b50f7bu:
+             if (!strcmp(name, "GetPhysicalDeviceInternalHandleNV")) return (void *)table->GetPhysicalDeviceInternalHandleNV;
+             break;
++
++        // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++        case 0x6f0c6281u:
++            if (!strcmp(name, "CreateSurfaceRENKU")) return (void *)table->CreateSurfaceRENKU;
++            break;
++#endif // VK_USE_PLATFORM_RENKU
+         default:
+             break;
+     }
+@@ -15323,6 +15340,11 @@ void fill_out_enabled_instance_extensions(uint32_t extension_count, const char *
+ #if defined(VK_USE_PLATFORM_UBM_SEC)
+         else if (0 == strcmp(extension_list[i], VK_SEC_UBM_SURFACE_EXTENSION_NAME)) { enables->sec_ubm_surface = 1; }
+ #endif // VK_USE_PLATFORM_UBM_SEC
++
++    // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++        else if (0 == strcmp(extension_list[i], VK_RENKU_SURFACE_EXTENSION_NAME)) { enables->renku_surface = 1; }
++#endif // VK_USE_PLATFORM_RENKU
+     }
+ }
+ 
+@@ -15714,6 +15736,11 @@ const VkLayerInstanceDispatchTable instance_disp = {
+ 
+     // ---- VK_NV_internal_handle extension commands
+     .GetPhysicalDeviceInternalHandleNV = terminator_GetPhysicalDeviceInternalHandleNV,
++
++    // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++    .CreateSurfaceRENKU = terminator_CreateSurfaceRENKU,
++#endif // VK_USE_PLATFORM_RENKU
+ };
+ 
+ // A null-terminated list of all of the instance extensions supported by the loader.
+@@ -15796,5 +15823,8 @@ const char *const LOADER_INSTANCE_EXTENSIONS[] = {
+ #if defined(VK_USE_PLATFORM_UBM_SEC)
+                                                   VK_SEC_UBM_SURFACE_EXTENSION_NAME,
+ #endif // VK_USE_PLATFORM_UBM_SEC
++#if defined(VK_USE_PLATFORM_RENKU)
++                                                  VK_RENKU_SURFACE_EXTENSION_NAME,
++#endif // VK_USE_PLATFORM_RENKU
+                                                   NULL };
+ // clang-format on
+diff --git a/loader/generated/vk_loader_extensions.h b/loader/generated/vk_loader_extensions.h
+index 9e38ea8..cee35d3 100644
+--- a/loader/generated/vk_loader_extensions.h
++++ b/loader/generated/vk_loader_extensions.h
+@@ -528,6 +528,11 @@ struct loader_icd_term_dispatch {
+ 
+     // ---- VK_NV_internal_handle extension commands
+     PFN_vkGetPhysicalDeviceInternalHandleNV GetPhysicalDeviceInternalHandleNV;
++
++    // ---- VK_RENKU_surface extension commands
++#if defined(VK_USE_PLATFORM_RENKU)
++    PFN_vkCreateSurfaceRENKU CreateSurfaceRENKU;
++#endif // VK_USE_PLATFORM_RENKU
+ };
+ 
+ struct loader_instance_extension_enable_list {
+@@ -606,6 +611,9 @@ struct loader_instance_extension_enable_list {
+ #if defined(VK_USE_PLATFORM_UBM_SEC)
+     uint8_t sec_ubm_surface;
+ #endif // defined(VK_USE_PLATFORM_UBM_SEC)
++#if defined(VK_USE_PLATFORM_RENKU)
++    uint8_t renku_surface;
++#endif // defined(VK_USE_PLATFORM_RENKU)
+ };
+ 
+ // Functions that required a terminator need to have a separate dispatch table which contains their corresponding
+diff --git a/loader/generated/vk_loader_wsi.c b/loader/generated/vk_loader_wsi.c
+index 30689bd..b71e804 100644
+--- a/loader/generated/vk_loader_wsi.c
++++ b/loader/generated/vk_loader_wsi.c
+@@ -265,6 +265,18 @@ VkResult wsi_unwrap_icd_surface(struct loader_icd_term* icd_term, VkSurfaceKHR*
+                     break;
+ #endif  // VK_USE_PLATFORM_UBM_SEC
+ 
++#if defined(VK_USE_PLATFORM_RENKU)
++                case VK_ICD_WSI_PLATFORM_RENKU:
++                    if (NULL != icd_term->dispatch.CreateSurfaceRENKU && icd_term->enabled_instance_extensions.renku_surface) {
++                        result = icd_term->dispatch.CreateSurfaceRENKU(
++                            icd_term->instance, (const VkSurfaceCreateInfoRENKU*)icd_surface->create_info, pAllocator,
++                            &icd_term->surface_list.list[icd_surface->surface_index]);
++                    } else {
++                        result = VK_ERROR_EXTENSION_NOT_PRESENT;
++                    }
++                    break;
++#endif  // VK_USE_PLATFORM_RENKU
++
+                 default:
+                     // Not supported
+                     result = VK_ERROR_EXTENSION_NOT_PRESENT;
+@@ -1643,6 +1655,62 @@ VKAPI_ATTR VkBool32 VKAPI_CALL terminator_GetPhysicalDeviceUbmPresentationSuppor
+ }
+ 
+ #endif  // VK_USE_PLATFORM_UBM_SEC
++#if defined(VK_USE_PLATFORM_RENKU)
++
++// ---- VK_RENKU_surface extension commands
++LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateSurfaceRENKU(VkInstance instance, const VkSurfaceCreateInfoRENKU* pCreateInfo,
++                                                                  const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface) {
++    struct loader_instance* loader_inst = loader_validate_and_get_instance_dispatch(instance, "vkCreateSurfaceRENKU");
++    return loader_inst->disp->layer_inst_disp.CreateSurfaceRENKU(loader_inst->instance, pCreateInfo, pAllocator, pSurface);
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateSurfaceRENKU(VkInstance instance, const VkSurfaceCreateInfoRENKU* pCreateInfo,
++                                                             const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface) {
++    VkResult result = VK_SUCCESS;
++    VkIcdSurface* icd_surface = NULL;
++    loader_platform_thread_lock_mutex(&loader_lock);
++
++    // Initialize pSurface to NULL just to be safe.
++    *pSurface = VK_NULL_HANDLE;
++
++    // First, check to ensure the appropriate extension was enabled:
++    struct loader_instance* loader_inst = loader_get_instance(instance);
++    if (!loader_inst->enabled_extensions.renku_surface) {
++        loader_log(loader_inst, VULKAN_LOADER_ERROR_BIT, 0,
++                   "VK_RENKU_surface extension not enabled. vkCreateSurfaceRENKU not executed!");
++        result = VK_ERROR_EXTENSION_NOT_PRESENT;
++        goto out;
++    }
++
++    // Next, if so, proceed with the implementation of this function:
++    result = allocate_icd_surface_struct(loader_inst, sizeof(icd_surface->renku_surf.base), sizeof(icd_surface->renku_surf),
++                                         pAllocator, &icd_surface);
++    if (VK_SUCCESS != result) {
++        goto out;
++    }
++
++    icd_surface->renku_surf.base.platform = VK_ICD_WSI_PLATFORM_RENKU;
++    icd_surface->renku_surf.pView = pCreateInfo->pView;
++
++    const struct loader_struct_type_info ci_types[] = {
++        {VK_STRUCTURE_TYPE_SURFACE_CREATE_INFO_RENKU, sizeof(VkSurfaceCreateInfoRENKU)},
++    };
++    result = copy_surface_create_info(loader_inst, icd_surface, pCreateInfo, sizeof(ci_types) / sizeof(ci_types[0]), ci_types,
++                                      "VkSurfaceCreateInfoRENKU", pAllocator);
++    if (VK_SUCCESS != result) {
++        goto out;
++    }
++
++    *pSurface = wrap_surface_handle(icd_surface);
++
++out:
++    cleanup_surface_creation(loader_inst, result, icd_surface, pAllocator);
++    loader_platform_thread_unlock_mutex(&loader_lock);
++
++    return result;
++}
++
++#endif  // VK_USE_PLATFORM_RENKU
+ 
+ bool generated_wsi_swapchain_instance_gpa(struct loader_instance* loader_inst, const char* name, void** addr) {
+     *addr = NULL;
+@@ -1824,5 +1892,13 @@ bool generated_wsi_swapchain_instance_gpa(struct loader_instance* loader_inst, c
+         return true;
+     }
+ #endif  // VK_USE_PLATFORM_UBM_SEC
++#if defined(VK_USE_PLATFORM_RENKU)
++
++    // ---- VK_RENKU_surface extension commands
++    if (!strcmp("vkCreateSurfaceRENKU", name)) {
++        *addr = loader_inst->enabled_extensions.renku_surface ? (void*)vkCreateSurfaceRENKU : NULL;
++        return true;
++    }
++#endif  // VK_USE_PLATFORM_RENKU
+     return false;
+ }
+diff --git a/loader/generated/vk_loader_wsi.h b/loader/generated/vk_loader_wsi.h
+index 2cccc0a..c3e16d0 100644
+--- a/loader/generated/vk_loader_wsi.h
++++ b/loader/generated/vk_loader_wsi.h
+@@ -327,5 +327,15 @@ VKAPI_ATTR VkBool32 VKAPI_CALL terminator_GetPhysicalDeviceUbmPresentationSuppor
+                                                                                      struct ubm_device* device);
+ 
+ #endif  // VK_USE_PLATFORM_UBM_SEC
++#if defined(VK_USE_PLATFORM_RENKU)
++
++// ---- VK_RENKU_surface extension commands
++LOADER_EXPORT VKAPI_ATTR VkResult VKAPI_CALL vkCreateSurfaceRENKU(VkInstance instance, const VkSurfaceCreateInfoRENKU* pCreateInfo,
++                                                                  const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
++
++VKAPI_ATTR VkResult VKAPI_CALL terminator_CreateSurfaceRENKU(VkInstance instance, const VkSurfaceCreateInfoRENKU* pCreateInfo,
++                                                             const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
++
++#endif  // VK_USE_PLATFORM_RENKU
+ 
+ bool generated_wsi_swapchain_instance_gpa(struct loader_instance* loader_inst, const char* name, void** addr);
+diff --git a/loader/wsi.c b/loader/wsi.c
+index c2d00b3..d250156 100644
+--- a/loader/wsi.c
++++ b/loader/wsi.c
+@@ -60,6 +60,9 @@ bool wsi_unsupported_instance_extension(const VkExtensionProperties* ext_prop) {
+ #if !defined(VK_USE_PLATFORM_SCREEN_QNX)
+     if (!strcmp(ext_prop->extensionName, "VK_QNX_screen_surface")) return true;
+ #endif  // VK_USE_PLATFORM_SCREEN_QNX
++#if !defined(VK_USE_PLATFORM_RENKU)
++    if (!strcmp(ext_prop->extensionName, "VK_RENKU_surface")) return true;
++#endif  // VK_USE_PLATFORM_RENKU
+ 
+     return false;
+ }
+diff --git a/loader/wsi.h b/loader/wsi.h
+index 33df061..55ffba2 100644
+--- a/loader/wsi.h
++++ b/loader/wsi.h
+@@ -78,6 +78,9 @@ typedef struct {
+ #if defined(VK_USE_PLATFORM_UBM_SEC)
+         VkIcdSurfaceUbm ubm_surf;
+ #endif  // VK_USE_PLATFORM_UBM_SEC
++#if defined(VK_USE_PLATFORM_RENKU)
++        VkIcdSurfaceRenku renku_surf;
++#endif  // VK_USE_PLATFORM_RENKU
+ 
+         // All of the specific ICD surface structures start with the base structure
+         VkIcdSurfaceBase base;
+diff --git a/scripts/generators/loader_wsi_generator.py b/scripts/generators/loader_wsi_generator.py
+index f694f6d..af95c3d 100644
+--- a/scripts/generators/loader_wsi_generator.py
++++ b/scripts/generators/loader_wsi_generator.py
+@@ -89,6 +89,9 @@ class LoaderWsiGenerator(BaseGenerator):
+ ''')
+ 
+     def get_wsi_enum_name(self, ext):
++        # VK_RENKU_surface names its platform by its author ID, not by a third word
++        if ext == 'VK_RENKU_surface':
++            return 'VK_ICD_WSI_PLATFORM_RENKU'
+         ext_enum = ext.lower().split('_')[2].upper()
+         ext_enum_fixup_dict = {'STREAM':'GGP', 'IMAGEPIPE': 'FUCHSIA'}
+         if ext_enum in ext_enum_fixup_dict:
+@@ -194,6 +197,8 @@ class LoaderWsiGenerator(BaseGenerator):
+             ext_union_name_fixup_dict = {'win32':'win', 'stream': 'ggp'}
+             if ext_union_name in ext_union_name_fixup_dict:
+                 ext_union_name = ext_union_name_fixup_dict[ext_union_name]
++            if ext == 'VK_RENKU_surface':
++                ext_union_name = 'renku'
+             # they all end with _surf, so add it after we fixed up the name
+             ext_union_name = ext_union_name + '_surf'
+ 
+diff --git a/tests/framework/generated/get_proc_addr_validator.h b/tests/framework/generated/get_proc_addr_validator.h
+index 1d1e996..1fbe82f 100644
+--- a/tests/framework/generated/get_proc_addr_validator.h
++++ b/tests/framework/generated/get_proc_addr_validator.h
+@@ -1306,4 +1306,7 @@ static const std::vector<const char*> kPlatformExportedFunctionNames = {
+ #if defined(VK_USE_PLATFORM_UBM_SEC)
+     "vkGetPhysicalDeviceUbmPresentationSupportSEC",
+ #endif  // defined(VK_USE_PLATFORM_UBM_SEC)
++#if defined(VK_USE_PLATFORM_RENKU)
++    "vkCreateSurfaceRENKU",
++#endif  // defined(VK_USE_PLATFORM_RENKU)
+ };
+diff --git a/tests/framework/layer/generated/vk_dispatch_table_helper.h b/tests/framework/layer/generated/vk_dispatch_table_helper.h
+index d0d4994..fb1c652 100644
+--- a/tests/framework/layer/generated/vk_dispatch_table_helper.h
++++ b/tests/framework/layer/generated/vk_dispatch_table_helper.h
+@@ -1024,5 +1024,8 @@ static inline void layer_init_instance_dispatch_table(VkInstance instance, VkLay
+     table->GetPhysicalDeviceUbmPresentationSupportSEC = (PFN_vkGetPhysicalDeviceUbmPresentationSupportSEC)gpa(instance, "vkGetPhysicalDeviceUbmPresentationSupportSEC");
+ #endif  // VK_USE_PLATFORM_UBM_SEC
+     table->GetPhysicalDeviceInternalHandleNV = (PFN_vkGetPhysicalDeviceInternalHandleNV)gpa(instance, "vkGetPhysicalDeviceInternalHandleNV");
++#if defined(VK_USE_PLATFORM_RENKU)
++    table->CreateSurfaceRENKU = (PFN_vkCreateSurfaceRENKU)gpa(instance, "vkCreateSurfaceRENKU");
++#endif  // VK_USE_PLATFORM_RENKU
+     // clang-format on
+ }
+-- 
+2.47.3
+

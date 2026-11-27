@@ -1,0 +1,64 @@
+SUMMARY="Remote desktop (RDP) server for RenkuOS"
+DESCRIPTION="RenkuRemoteDesktop shares the desktop on the machine's screen \
+with Remote Desktop clients: Windows Remote Desktop Connection (mstsc), \
+Windows App on macOS, iOS, and Android, and FreeRDP or Remmina on Linux.
+
+It supports Network Level Authentication, the clipboard (text and files in \
+both directions), and resizing the desktop to the client's window. It is \
+turned on and off in the Remote Desktop preferences."
+HOMEPAGE="https://github.com/RenkuOS/RenkuRemoteDesktop"
+COPYRIGHT="2026 RenkuOS contributors"
+LICENSE="MIT"
+REVISION="1"
+SOURCE_URI="https://github.com/RenkuOS/RenkuRemoteDesktop/archive/refs/tags/v$portVersion.tar.gz"
+CHECKSUM_SHA256="1b984d7c00660e6928127517d31a9696d823ae5a33c833c1ee858a44a1b4c0f0"
+SOURCE_DIR="RenkuRemoteDesktop-$portVersion"
+
+# The server is C++17 and the input_server add-on has to match
+# input_server's own architecture, so there is no gcc2 build.
+ARCHITECTURES="!x86_gcc2 x86_64"
+
+PROVIDES="
+	renkuremotedesktop = $portVersion
+	app:RenkuRemoteDesktop = $portVersion
+	add_on:RenkuRemoteDesktopInput = $portVersion
+	"
+REQUIRES="
+	haiku
+	lib:libcrypto
+	lib:libssl
+	"
+
+BUILD_REQUIRES="
+	haiku_devel
+	devel:libcrypto
+	devel:libssl
+	"
+BUILD_PREREQUIRES="
+	cmd:g++
+	cmd:make
+	cmd:mimeset
+	cmd:rc
+	cmd:xres
+	"
+
+USER_SETTINGS_FILES="
+	settings/RenkuRemoteDesktop directory
+	"
+
+BUILD()
+{
+	make $jobArgs
+}
+
+INSTALL()
+{
+	make install PREFIX=$prefix
+
+	addPreferencesDeskbarSymlink "$prefix/preferences/Remote Desktop"
+}
+
+TEST()
+{
+	make test
+}

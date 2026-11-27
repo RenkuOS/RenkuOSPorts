@@ -1,0 +1,87 @@
+From 9c8899f1d0a3d6ff545600be947cff6433a60666 Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Thu, 26 Nov 2026 18:37:35 +1000
+Subject: [PATCH] Apply --geometry without X11
+
+handleXGeometry() parses the geometry with XParseGeometry and does
+nothing at all when kdialog is built without X11, so on RenkuOS and
+Haiku, which have no X11, --geometry is silently ignored and every
+dialog opens at its smallest size. Winetricks asks for 600x400 for its
+lists; they opened at 272x264, too cramped to use.
+
+Without X11, parse the same syntax,
+[=][<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>], with
+QRegularExpression: resize to the size given and move to the offsets
+given, from the right or bottom edge of the screen's available area for
+a negative sign. The size is the window's content and move() places its
+frame, so for a negative offset the native window is created first and
+its frame margins are taken off too: -0-0 puts the frame in the corner.
+A part that is missing is left alone (the X11 code passes uninitialised
+values to setGeometry then). The X11 build is unchanged.
+
+Tested on RenkuOS (1024x768): no geometry 272x264; 600x400+100+100
+600x400 with the frame at 100,100; 800x600; +300+200 at the default
+size; 600x400-0-0 with the frame in the bottom right corner;
+600x400-20-10 with it 20 pixels from the right edge and 10 from the
+bottom; an invalid geometry is ignored with a warning.
+Not tested: a window manager that ignores a requested position
+(Wayland).
+---
+ src/utils.cpp | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/src/utils.cpp b/src/utils.cpp
+index 7ace2e4..3f865b9 100644
+--- a/src/utils.cpp
++++ b/src/utils.cpp
+@@ -12,6 +12,9 @@
+ #if defined HAVE_X11 && !defined K_WS_QTONLY
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
++#else
++#include <QRegularExpression>
++#include <QWindow>
+ #endif
+ 
+ static QString xGeometry;
+@@ -40,6 +43,37 @@ void Utils::handleXGeometry(QWidget *dlg)
+         dlg->setGeometry(x, y, w, h);
+         qDebug() << "x: " << x << "  y: " << y << "  w: " << w << "  h: " << h;
+     }
++#else
++    // Without X11 there is no XParseGeometry: parse the same syntax,
++    // [=][<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>], with Qt.
++    if (!xGeometry.isEmpty()) {
++        static const QRegularExpression geometryRe(QStringLiteral("^=?(?:(\\d+)[xX](\\d+))?(?:([+-])(\\d+)([+-])(\\d+))?$"));
++        const QRegularExpressionMatch match = geometryRe.match(xGeometry);
++        if (!match.hasMatch()) {
++            qWarning() << "Invalid geometry:" << xGeometry;
++            return;
++        }
++        if (match.hasCaptured(1)) {
++            dlg->resize(match.captured(1).toInt(), match.captured(2).toInt());
++        }
++        if (match.hasCaptured(3)) {
++            // move() places the window's frame, whose border and title bar the
++            // size given leaves out: create the native window to learn them.
++            dlg->winId();
++            const QMargins frame = dlg->windowHandle() ? dlg->windowHandle()->frameMargins() : QMargins();
++            const QRect screenGeom = dlg->screen()->availableGeometry();
++            int x = match.captured(4).toInt();
++            int y = match.captured(6).toInt();
++            if (match.captured(3) == QLatin1String("-")) {
++                x = screenGeom.width() - x - dlg->width() - frame.left() - frame.right();
++            }
++            if (match.captured(5) == QLatin1String("-")) {
++                y = screenGeom.height() - y - dlg->height() - frame.top() - frame.bottom();
++            }
++            dlg->move(x, y);
++        }
++        qDebug() << "geometry:" << dlg->pos() << dlg->size();
++    }
+ #endif
+ }
+ 
+-- 
+2.47.3
+

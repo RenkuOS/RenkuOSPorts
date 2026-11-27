@@ -1,7 +1,7 @@
-From 9d7f6af5dd7e6e2976c43968757c7037f813b55f Mon Sep 17 00:00:00 2001
+From e33c9309961677e75803abe0380e307cb784252e Mon Sep 17 00:00:00 2001
 From: Alexander von Gluck <alex@terarocket.io>
 Date: Tue, 9 Apr 2024 07:52:08 -0500
-Subject: [PATCH] Haiku: guard calls to fRenderer in HGL
+Subject: [PATCH 1/2] Haiku: guard calls to fRenderer in HGL
 
 * Prevents dereferencing fRenderer when an EGL renderer is not found
 * Add nice error text back to OpenGL view to give the user some feedback
@@ -99,5 +99,65 @@ index 3719522..e0430cb 100644
  
  
 -- 
-2.43.2
+2.47.3
+
+
+From ac9fc1f4ee485e4da2298e9cc015901f6cbbc9fc Mon Sep 17 00:00:00 2001
+From: rations <ehqcar@proton.me>
+Date: Sat, 21 Nov 2026 17:27:32 +1000
+Subject: [PATCH 2/2] HGL: use PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+
+Haiku renamed PTHREAD_RECURSIVE_MUTEX_INITIALIZER to
+PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP (haiku 6e55e6942f, 2026-03-30,
+"pthread: PTHREAD_RECURSIVE_MUTEX_INITIALIZER is non-POSIX"), and RenkuOS
+has the same headers. GLView.cpp then fails to build:
+
+  src/HGL/GLView.cpp:76:29: error: 'PTHREAD_RECURSIVE_MUTEX_INITIALIZER'
+  was not declared in this scope
+
+Use the _NP name, and define it from the old one when the headers only
+have that, so the file still builds against older headers.
+
+Built on RenkuOS hrev60072+1108 only; not built against older headers.
+---
+ src/HGL/GLView.cpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/HGL/GLView.cpp b/src/HGL/GLView.cpp
+index e0430cb..8366d25 100644
+--- a/src/HGL/GLView.cpp
++++ b/src/HGL/GLView.cpp
+@@ -31,6 +31,12 @@
+ #include <private/shared/AutoLocker.h>
+ #include <private/shared/PthreadMutexLocker.h>
+ 
++// Haiku renamed PTHREAD_RECURSIVE_MUTEX_INITIALIZER to the non-POSIX _NP
++// name in March 2026; keep building against headers from before that.
++#ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
++#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP PTHREAD_RECURSIVE_MUTEX_INITIALIZER
++#endif
++
+ #include "BitmapHook.h"
+ 
+ 
+@@ -73,7 +79,7 @@ public:
+ private:
+     status_t Init();
+ 
+-    pthread_mutex_t fLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
++    pthread_mutex_t fLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+     status_t fStatus = B_NO_INIT;
+     void *libEgl {};
+ 
+@@ -108,7 +114,7 @@ struct BGLView::Renderer {
+         void GetSize(uint32_t &width, uint32_t &height) override;
+         BBitmap *SetBitmap(BBitmap *bmp) override;
+     } fBmpHook;
+-    pthread_mutex_t fLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
++    pthread_mutex_t fLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+     ObjectDeleter<BBitmap> fBitmap;
+ 
+     ~Renderer();
+-- 
+2.47.3
 
