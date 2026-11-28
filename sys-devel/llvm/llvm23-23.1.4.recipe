@@ -707,6 +707,8 @@ BUILD()
 		export LIBRARY_PATH=$LIBRARY_PATH:$sourceDir/build/lib
 	fi
 
+	# The runtimes are linked by the just-built ld.lld, which hangs on Haiku
+	# with its default thread pool, so link them with one thread.
 	cmake -S llvm -B build -G Ninja \
 		$cmakeDirArgs \
 		-DCMAKE_BUILD_TYPE=Release \
@@ -717,7 +719,8 @@ BUILD()
 		-DLIBUNWIND_ENABLE_STATIC=OFF \
 		-DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld" \
 		-DLLVM_ENABLE_RUNTIMES="compiler-rt;libunwind;openmp" \
-		-DLIBOMP_INSTALL_ALIASES=OFF
+		-DLIBOMP_INSTALL_ALIASES=OFF \
+		-DRUNTIMES_CMAKE_ARGS="-DCMAKE_EXE_LINKER_FLAGS=-Wl,--threads=1;-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--threads=1;-DCMAKE_MODULE_LINKER_FLAGS=-Wl,--threads=1"
 
 	cmake --build build $jobArgs
 }
